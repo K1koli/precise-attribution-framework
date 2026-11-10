@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+data/raw/*.jsonl
+data/derived/*
+data/validation/*
+
+# 本地备份（补丁前的原文件）
+.paf-backup-*/
+
+# macOS
+.DS_Store

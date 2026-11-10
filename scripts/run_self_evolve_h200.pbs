@@ -1,0 +1,98 @@
+#!/bin/bash
+#PBS -N paf-self-evolve
+#PBS -q gpu_ded
+# 组里要求：单作业最多 2 卡、最长 48h。这里 1 卡 / 48h，符合规定。
+#PBS -P ds_ccds_wei.lu
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+#PBS -o /home/n2602358e/logs/paf-self-evolve.log
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+
+# GAAS 上没有全局 python/3.12；vLLM 由模块提供（同时带入 python 3.12.13 / torch / cuda 13.1）
+module load vllm/0.19.0
+
+# 项目虚拟环境（本项目 + PyYAML；vllm 通过模块的 PATH / PYTHONPATH 可见）
+source "$HOME/venvs/paf/bin/activate"
+
+# 共享模型库（所有人可读）；可用环境变量覆盖
+MODEL_PATH="${MODEL_PATH:-/projects_vol/gp_wei.lu/base_model/Qwen3.8-27B}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-Qwen3.8-27B}"
+PORT="${PORT:-8000}"
+export PORT
+
+[[ -f "$MODEL_PATH/config.json" ]] || { echo "MODEL_PATH 无效: $MODEL_PATH"; exit 2; }
+
+# PBS 默认 fd 上限 16384，vLLM 会告警；能提就提
+ulimit -n 65536 2>/dev/null || true
+
+LOG_DIR="${LOG_DIR:-logs}"
+mkdir -p "$LOG_DIR" data/derived/h200-self-evolve
+
+# PBS 用 UUID 形式给出 GPU（CUDA_VISIBLE_DEVICES=GPU-xxxx），而本 vLLM 构建会
+# int(CUDA_VISIBLE_DEVICES) 直接崩。把 UUID 翻成真实的物理序号。
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  NEW=""
+  OLDIFS=$IFS
+  IFS=','
+  for d in $CUDA_VISIBLE_DEVICES; do
+    case "$d" in
+      GPU-*)
+        idx=$(env -u CUDA_VISIBLE_DEVICES nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null \
+              | awk -F', *' -v u="$d" '$2==u {print $1; exit}')
+        [[ -z "$idx" ]] && idx=0
+        echo "mapped $d -> physical index $idx"
+        ;;
+      *) idx="$d" ;;
+    esac
+    if [[ -z "$NEW" ]]; then NEW="$idx"; else NEW="$NEW,$idx"; fi
+  done
+  IFS=$OLDIFS
+  export CUDA_VISIBLE_DEVICES="$NEW"
+  echo "CUDA_VISIBLE_DEVICES rewritten to [$CUDA_VISIBLE_DEVICES]"
+fi
+
+cleanup() {
+  if [[ -n "${VLLM_PID:-}" ]] && kill -0 "$VLLM_PID" 2>/dev/null; then
+    kill "$VLLM_PID" || true
+    wait "$VLLM_PID" || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+# 初期 max-model-len=32768、max-num-seqs=1，先稳定跑通；后续再提升上下文。
+vllm serve "$MODEL_PATH" \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --dtype bfloat16 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 1 \
+  --host 127.0.0.1 \
+  --port "$PORT" \
+  > "$LOG_DIR/vllm-${PBS_JOBID:-local}.log" 2>&1 &
+VLLM_PID=$!
+export VLLM_PID
+
+# 就绪等待；同时监视 vLLM 进程，挂了就立刻失败（别空等 30 分钟占着卡）
+python - <<'PY'
+import json, os, time, urllib.request
+url = f"http://127.0.0.1:{os.environ.get('PORT', '8000')}/v1/models"
+pid = int(os.environ["VLLM_PID"])
+for attempt in range(360):
+    if not os.path.exists(f"/proc/{pid}"):
+        raise SystemExit("vLLM 进程已退出，见 $LOG_DIR/vllm-<jobid>.log 末尾")
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            print("vLLM ready:", json.loads(r.read().decode()))
+            break
+    except Exception:
+        time.sleep(10)
+else:
+    raise SystemExit("vLLM 在 60 分钟内未就绪，请检查 vLLM 日志")
+PY
+
+# 若使用非默认端口，配置文件中的 base_url 也要相应修改。
+paf llm-check --config configs/self_evolve/qwen38_27b_h200.yaml
+paf evolve --config configs/self_evolve/qwen38_27b_h200.yaml --output data/derived/h200-self-evolve

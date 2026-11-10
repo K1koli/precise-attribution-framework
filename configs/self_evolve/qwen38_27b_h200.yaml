@@ -1,0 +1,68 @@
+# 首轮真实模型 Self-Evolve 配置；示例任务为可验证的中文知识问答。
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  model: Qwen3.8-27B
+  api_key: EMPTY
+  timeout: 240
+  max_retries: 2
+
+harness:
+  answer_system_prompt: >-
+    你是严谨的知识问答助手。仅依据提供的证据回答；证据不足时明确说明不确定；
+    优先直接回答问题，并保留关键限定条件。不要编造事实或引用。
+
+evolution:
+  failure_threshold: 0.75
+  minimum_gain: 0.02
+
+tasks:
+  development:
+    - id: dev-001
+      question: 线粒体的主要功能是什么？
+      expected_answer: 线粒体的主要功能是通过细胞呼吸产生 ATP，为细胞活动提供能量。
+      documents:
+        - id: bio-01
+          title: 线粒体与能量代谢
+          text: 线粒体是真核细胞的重要细胞器，主要通过氧化磷酸化等细胞呼吸过程产生三磷酸腺苷（ATP），为细胞活动提供能量。
+        - id: bio-02
+          title: 细胞核
+          text: 细胞核储存遗传物质，并参与基因表达调控。
+    - id: dev-002
+      question: TCP 和 UDP 的主要区别是什么？
+      expected_answer: TCP 面向连接并提供可靠、有序的数据传输；UDP 无连接，开销较低，但不保证交付和顺序。
+      documents:
+        - id: net-01
+          title: TCP 协议
+          text: TCP 是面向连接的传输层协议，提供可靠、有序的字节流传输，并通过确认和重传处理丢包。
+        - id: net-02
+          title: UDP 协议
+          text: UDP 是无连接的传输层协议，头部开销较小，不保证数据报一定送达，也不保证到达顺序。
+    - id: dev-003
+      question: 什么是过拟合？
+      expected_answer: 过拟合是模型过度学习训练数据中的细节和噪声，导致训练表现好但在未见数据上泛化能力差。
+      documents:
+        - id: ml-01
+          title: 机器学习中的过拟合
+          text: 过拟合指模型过度拟合训练样本中的特定模式、噪声或偶然特征，训练误差较低，但在未见数据上的泛化性能下降。
+        - id: ml-02
+          title: 正则化
+          text: 正则化通过约束模型复杂度缓解过拟合。
+    - id: dev-004
+      question: 贝叶斯定理表达了什么关系？
+      expected_answer: 贝叶斯定理描述如何根据先验概率和似然更新事件的后验概率。
+      documents:
+        - id: stat-01
+          title: 贝叶斯定理
+          text: 贝叶斯定理将先验概率与似然结合，得到观察证据后的后验概率，即 P(A|B)=P(B|A)P(A)/P(B)。
+        - id: stat-02
+          title: 频率学派统计
+          text: 频率学派将概率解释为重复试验中事件发生的长期频率。
+  # OOD 样例只用于报告，不得影响进化接受决策。
+  ood:
+    - id: ood-001
+      question: 光合作用的主要产物是什么？
+      expected_answer: 光合作用利用光能将二氧化碳和水转化为有机物，并释放氧气。
+      documents:
+        - id: bio-ood-01
+          title: 光合作用
+          text: 绿色植物利用光能，将二氧化碳和水转化为糖类等有机物，并释放氧气。

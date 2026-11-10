@@ -1,0 +1,24 @@
+experiment:
+  id: demo-full-factorial-v1
+  description: 三模块合成系统的主效应、交互效应与 Shapley 端到端演示
+  output_metric: score
+  confidence_level: 0.95
+
+scenario:
+  id: synthetic-three-module-interaction-v1
+  modules: [检索, 推理, 校验]
+  baseline: 0.25
+  main_effects:
+    检索: 0.80
+    推理: -0.25
+    校验: 0.50
+  pairwise_interactions:
+    检索|推理: 0.60
+    推理|校验: -0.35
+  task_heterogeneity_sd: 0.18
+  interaction_heterogeneity_sd: 0.12
+  noise_sd: 0.20
+
+sampling:
+  blocks: 60
+  seed: 20261109
