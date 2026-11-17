@@ -5,6 +5,5 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-data/raw/*.jsonl
-data/derived/*
-data/validation/*
+# 实验输出（报告、候选源码、逐题轨迹）
+data/
