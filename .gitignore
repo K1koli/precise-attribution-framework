@@ -14,3 +14,6 @@ data/validation/*
 
 # macOS
 .DS_Store
+
+# 个人材料（不随仓库分发）
+hku_mphil_proposal.pdf

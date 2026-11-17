@@ -1,0 +1,24 @@
+# BRIGHT/Economics 上的 OOD 归因实验：检索型任务，指标 nDCG@10。
+# 任务集由 scripts/bright_to_tasks.py 生成（每题自带 50 篇候选池 + gold_doc_ids）。
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  model: Qwen3.8-27B
+  api_key: EMPTY
+  timeout: 240
+  max_retries: 2
+
+harness:
+  # 实测（103 题，50 池）：rank10 = 0.1105 优于 rank5 = 0.1069；BM25 自实现更差（0.082）已回滚
+  top_k_retrieval: 50
+  top_k_ranked: 10        # nDCG@10 需要 10 篇，原来的 5 天然吃亏
+  context_max_chars: 9000
+
+benchmark: bright_ndcg10
+tasks_file: configs/tasks/bright_economics_50.yaml
+
+gate:
+  minimum_dev_gain: 0.01
+  minimum_heldout_gain: 0.01
+  minimum_pair_coverage: 0.90
+  require_positive_ci_lower_bound: true
+  evaluate_all_on_heldout: true

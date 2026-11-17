@@ -67,7 +67,56 @@ paf attribute-set --config configs/experiments/qa30_attribution.yaml --output da
 
 `qa30_attribution.yaml` 中包含 EvidencePreparation 去除文档元数据前缀的手写对照候选。单独验证该候选而不生成模型提案，可运行 `paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-reference-control --proposals 0`。候选源码通过 `source_file` 相对配置文件目录加载。
 
-BRIGHT 原始语料和预处理后的 Biology 任务文件未包含在仓库中。运行 `bright_biology.yaml` 前，需要准备配置 `tasks_file` 指向的 `configs/tasks/bright_biology_50.yaml`；每题需包含候选 `documents` 和 `gold_doc_ids`。`bright_ndcg10` adapter 评测给定候选池上的检索排序，不负责下载或转换 BRIGHT 原始数据。
+仓库包含 `configs/tasks/bright_biology_50.yaml` 和 `configs/tasks/bright_economics_50.yaml` 两个预处理任务集。Biology 文件含 103 道题，每题 50 篇候选文档；候选池由全域语料 BM25 初筛，并强制并入该题全部 gold 文档。因此它用于候选池上的重排实验，**不是全库在线检索结果**，且 gold 入池设置会使评测不同于端到端全库召回。BRIGHT 原始全量语料不包含在仓库中。
+
+`bright_ndcg10` adapter 只评测任务文件所给候选池上的检索排序，不负责下载/索引原始数据。要运行当前 Biology 候选池实验，可使用 `configs/experiments/bright_biology.yaml`；要评估真正的全库检索，需要另行接入全量语料和共享索引，当前流程尚未实现。
+
+## 复现 BRIGHT Biology 候选池实验
+
+仓库已包含预处理任务集 `configs/tasks/bright_biology_50.yaml`（103 题 × 50 篇候选）和对应配置 `configs/experiments/bright_biology.yaml`，**无需下载原始语料**即可复现当前结论。
+
+1. 安装（Python 3.12 / 3.13）：
+
+   ```bash
+   python -m venv .venv && source .venv/bin/activate
+   python -m pip install -e '.[dev]'
+   pytest            # 20 项测试
+   ```
+
+2. 启动 OpenAI-compatible 服务（Qwen3.8-27B + vLLM），或修改配置中的 `llm.base_url` 与 `llm.model` 指向你自己的服务。
+
+3. 运行：
+
+   ```bash
+   paf attribute-set --config configs/experiments/bright_biology.yaml \
+       --output data/derived/bright-bio --proposals 2
+   ```
+
+4. 预期结果（单卡 H200，加载约 5 分钟后评测约 5 分钟；dev 69 题 / held-out 34 题）：
+
+   | 项 | 参考值 |
+   |---|---|
+   | dev 基线 nDCG@10 | ≈ 0.52 |
+   | QueryUnderstanding 效应 | ≈ +0.37 |
+   | EvidenceRetrieval 效应 | ≈ +0.52 |
+   | EvidencePreparation / EvidenceReasoning | 不参与（`bypass_inactive_modules: true`） |
+   | 版本门 | 当前提案均为负向或格式非法，`accepted = false` |
+
+5. 产物：`multi_task_attribution.json`（逐题轨迹与得分）、`multi_task_attribution.md`（汇总表）、`candidate_modules/*.py`（提案源码）、通过版本门时另有 `selected_module.py`。
+
+> 复现时不要期待出现被接受的版本：截至当前代码，自动生成的候选在这套任务上均为负向改动，仓库只保证流程与评测可复现，不保证自动进化能提分。
+
+### 从原始 parquet 重新生成任务集（可选）
+
+生成口径：每题用全库 BM25 取 top-`pool_size`，再**强制并入该题全部 gold chunk**（保证召回上限为 1.0）；`text` 截断 1200 字符；控制字符与孤立代理字符会被清洗。
+
+```bash
+python -m pip install pyarrow
+python scripts/bright_to_tasks.py --raw-dir data/bright/raw --domain biology \
+    --out configs/tasks/bright_biology_50.yaml --pool-size 50
+```
+
+原始目录需包含 `documents/<domain>-00000-of-00001.parquet`（字段 `id`,`content`）与 `examples/<domain>-00000-of-00001.parquet`（字段 `query`,`id`,`gold_ids`）。转换完成后检查输出 `stats`：`pool_size_min/max` 应等于（或略大于）`--pool-size`，金标覆盖应为 100%。
 
 若要四个模块各生成一个候选，可传 `--proposals 4` 并重复指定四个 `--target-module`。BRIGHT 风格预处理数据可将配置 `benchmark` 设为 `bright_ndcg10`；该适配器只归因查询理解和证据检索模块。
 
@@ -97,7 +146,7 @@ PYTHONPATH=src python -m precise_attribution.cli run \
 - 旧 `paf evolve` 命令仍是单轮 AnswerGenerator 提示词进化，Critic 负责提案准入；独立的 `paf attribute-set` 命令实现了代码级模块变异。
 - QA 示例使用轻量 token-F1；BRIGHT 适配器只评估预处理后的候选文档排序。当前实验结果不能单独证明通用知识密集型能力或跨领域迁移。
 
-- 合成归因实验与 LLM Harness 进化是两条独立实验路径；BRIGHT Biology 已接入预处理候选池评测，但尚未实现从原始数据到完整端到端 RAG 的统一复现流程。
+- 合成归因实验与 LLM Harness 进化是两条独立实验路径；BRIGHT Biology 已接入预处理候选池评测，但尚未实现从原始语料加载、全库召回到排序的完整端到端流程。
 - 当前仅支持二元模块状态和 `bypass` 干预；空输出、中性替换、替代实现已在设计中区分，但尚未实现为可执行策略。
 - 区间使用配对区块的正态近似（1.96 × 标准误），不是小样本精确区间或多重比较校正。
 - Shapley 对联盟均值精确枚举；“精确”指对已观测联盟价值函数精确计算，不代表因果机制真值。
