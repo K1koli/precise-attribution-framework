@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import ast
+import collections
+import heapq
+import importlib
 import json
+import math
+import re
 import textwrap
 from typing import Any
 
@@ -23,7 +28,38 @@ _SAFE_BUILTINS = {
     "reversed": reversed, "round": round, "set": set, "sorted": sorted,
     "str": str, "sum": sum, "tuple": tuple, "zip": zip,
     "all": all, "any": any, "__build_class__": __build_class__,
+    "ArithmeticError": ArithmeticError, "Exception": Exception,
+    "IndexError": IndexError, "KeyError": KeyError, "LookupError": LookupError,
+    "RuntimeError": RuntimeError, "TypeError": TypeError, "ValueError": ValueError,
+    "ZeroDivisionError": ZeroDivisionError,
 }
+
+# Candidate code may use a small, explicit set of pure-Python standard-library
+# modules. Imports are checked both in the AST and at runtime; OS, network,
+# process, and arbitrary third-party modules remain unavailable.
+_SAFE_IMPORTS = {"collections", "heapq", "math", "re"}
+_SAFE_FROM_IMPORTS = {
+    "collections": {"Counter", "defaultdict", "deque"},
+    "heapq": {"heappop", "heappush", "nlargest", "nsmallest"},
+    "math": {"ceil", "exp", "floor", "log", "sqrt"},
+    "re": {"compile", "escape", "findall", "finditer", "search", "split", "sub"},
+}
+
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name not in _SAFE_IMPORTS:
+        raise ImportError(f"候选模块不允许导入 {name!r}")
+    fromlist = fromlist or ()
+    allowed_names = _SAFE_FROM_IMPORTS[name]
+    if any(item != "*" and item not in allowed_names for item in fromlist):
+        raise ImportError(f"候选模块从 {name!r} 导入了不允许的名称")
+    if "*" in fromlist:
+        raise ImportError("候选模块不允许通配符导入")
+    return importlib.import_module(name)
+
+
+_SAFE_BUILTINS["__import__"] = _safe_import
+
 _SAFE_ATTRIBUTES = {
     # 字符串
     "capitalize", "casefold", "center", "count", "endswith", "expandtabs", "find",
@@ -37,6 +73,11 @@ _SAFE_ATTRIBUTES = {
     "extend", "get", "insert", "intersection", "intersection_update", "isdisjoint",
     "issubset", "issuperset", "items", "keys", "pop", "remove", "reverse",
     "setdefault", "sort", "symmetric_difference", "union", "update", "values",
+    "most_common",
+    # 已开放标准库的安全属性
+    "Counter", "defaultdict", "deque", "heappop", "heappush", "nlargest", "nsmallest",
+    "ceil", "e", "exp", "floor", "inf", "log", "log10", "log2", "nan", "pi", "sqrt", "tau",
+    "compile", "end", "escape", "findall", "finditer", "group", "groups", "search", "span", "start", "sub",
     # 框架允许的唯一对象属性
     "chat", "llm",
 }
@@ -100,9 +141,22 @@ def validate_source(source: str) -> ast.Module:
     declared_names.update(node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store))
     declared_names.update(node.arg for node in nodes if isinstance(node, ast.arg))
     declared_names.update(node.name for node in nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            declared_names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            declared_names.update(alias.asname or alias.name for alias in node.names)
     allowed_names = set(_SAFE_BUILTINS) | declared_names
     for node in nodes:
-        if isinstance(node, (ast.Import, ast.ImportFrom, ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith, ast.Try, ast.While)):
+        if isinstance(node, ast.Import):
+            if any(alias.name not in _SAFE_IMPORTS for alias in node.names):
+                raise ValueError("候选源码只能导入 math、re、collections、heapq")
+        elif isinstance(node, ast.ImportFrom):
+            if node.level != 0 or node.module not in _SAFE_FROM_IMPORTS or any(
+                alias.name not in _SAFE_FROM_IMPORTS[node.module] for alias in node.names
+            ):
+                raise ValueError("候选源码包含不允许的 from-import")
+        elif isinstance(node, (ast.Global, ast.Nonlocal, ast.With, ast.AsyncWith, ast.While)):
             raise ValueError(f"候选源码包含不支持的语法：{type(node).__name__}")
         if isinstance(node, ast.Attribute) and (node.attr.startswith("__") or node.attr not in _SAFE_ATTRIBUTES):
             raise ValueError(f"候选源码使用了不允许的属性：{node.attr}")
@@ -120,9 +174,32 @@ _SHELL = """class CandidateModule:
 
 
 def wrap_body(body: str) -> str:
-    """把模型输出的方法体包进固定外壳（措施 1：只填方法体，结构由我们保证）。"""
-    lines = textwrap.dedent(body).strip("\n").splitlines()
-    indented = "\n".join(("        " + line) if line.strip() else "" for line in lines)
+    """把模型输出的方法体包进固定外壳（措施 1：只填方法体，结构由我们保证）。
+
+    模型给的缩进常常不一致（首行 4 空格、后续 8 空格、末尾又回到 0），
+    ``textwrap.dedent`` 在最小缩进为 0 时不会做任何事，包进外壳后会
+    IndentationError。这里按“非空行的最小缩进”手工归一化。
+    """
+    lines = body.replace("\t", "    ").strip("\n").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    # 模型有时会把 `def run(self, inputs):` 也一起写进“方法体”，先剥掉这一行
+    if lines and re.match(r"^\s*def\s+run\s*\(", lines[0]):
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # 以“第一条非空行”的缩进为基准：模型通常整体缩进一致，只有首/尾行会飘
+    first = next((line for line in lines if line.strip()), "")
+    base = len(first) - len(first.lstrip())
+    normalized = []
+    for line in lines:
+        if not line.strip():
+            normalized.append("")
+        elif len(line) - len(line.lstrip()) >= base:
+            normalized.append(line[base:])
+        else:
+            normalized.append(line.lstrip())
+    indented = "\n".join(("        " + line) if line.strip() else "" for line in normalized)
     return _SHELL.format(body=indented)
 
 
@@ -150,10 +227,10 @@ def propose_code_candidate(llm: Any, *, module: str, current_source: str, failur
 接口契约：{contract}
 只修改这个模块的算法/实现方法。不能改变输入输出契约，不能把失败样例里的题目、参考答案或文档内容硬编码进候选。
 Critic 的轨迹诊断和针对性消融结果是待检验假设，不是已证实因果。请围绕其中的机制与修改目标做最小代码改动；不要扩展到无关模块。如果消融不支持诊断，也应谨慎处理，避免强行制造收益。
-候选类必须名为 CandidateModule，且仅实现 def run(self, inputs)。如需调用模型，可使用 self.llm.chat(messages, temperature=0.0, max_tokens=512)。
-允许的内建函数：{', '.join(sorted(_SAFE_BUILTINS))}
+候选类必须名为 CandidateModule，且仅实现 def run(self, inputs)。如需调用模型，可使用 self.llm.chat(messages, temperature=0.0, max_tokens=512)，每题最多 8 次。
+允许的内建函数：{', '.join(sorted(set(_SAFE_BUILTINS) - {'__import__', '__build_class__'}))}
 允许调用的方法名（属性白名单，超出即被拒）：{', '.join(sorted(_SAFE_ATTRIBUTES - {'chat', 'llm'}))}
-禁止：import、文件/网络访问、反射、继承、装饰器、异步、异常处理（try）、lambda、while、dunder 属性。
+允许导入：math、re、collections、heapq；或从这些模块导入白名单名称。允许 lambda 和 try/except。禁止其它导入、文件/网络/进程访问、反射、继承、装饰器、异步、while、dunder 属性。
 当前实现：
 {current_source}
 Critic 诊断纲领及定向消融结果：
@@ -162,7 +239,7 @@ Critic 诊断纲领及定向消融结果：
 {failures[:5]}
 只输出 ``run`` 方法的**方法体**（不要写 class、不要写 def run 这一行），放在一个 python 代码块中。
 方法体缩进 4 个空格即可；类外壳由框架负责，会自动包成 ``class CandidateModule``。
-不要定义其它函数、类或模块级语句。"""
+可以在 run 方法内部定义局部辅助函数；不要定义其它类或模块级语句。"""
     feedback = ""
     last_error: Exception | None = None
     for attempt in range(2):
@@ -170,11 +247,11 @@ Critic 诊断纲领及定向消融结果：
         if feedback:
             attempt_prompt += (
                 "\n\n你上一次提交的候选未通过检查。校验错误如下：\n"
-                f"{feedback}\n请针对错误修复，仍只输出一个 CandidateModule 类的完整源码。"
+                f"{feedback}\n请针对错误修复，仍只输出 run 方法体；如果校验错误来自语法或导入，请按允许能力调整。"
             )
         try:
             raw = llm.chat([
-                {"role": "system", "content": "你是单模块代码变异器。严格遵守输入输出契约，只输出完整 CandidateModule 源码。"},
+                {"role": "system", "content": "你是单模块代码变异器。严格遵守输入输出契约，只输出 run 方法体。"},
                 {"role": "user", "content": attempt_prompt},
             ], temperature=0.2, max_tokens=1600)
             if "```" in raw:
