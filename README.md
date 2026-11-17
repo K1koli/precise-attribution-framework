@@ -1,13 +1,14 @@
 # 精确归因框架（Precise Attribution Framework）
 
-**项目：** 进化归因  
-**代码版本：** 0.2.0（合成归因原型 + 本地 LLM Self-Evolve MVP）  
+**项目：** 归因驱动的知识密集型 Harness 进化
+
+**代码版本：** 0.2.0（合成归因原型 + LLM Harness 进化实验）
 **文档语言：** 中文  
-**当前状态：** 本地实现与测试阶段；尚未创建 GitHub 仓库。
+**当前状态：** 研究原型；代码托管于 [GitHub](https://github.com/K1koli/precise-attribution-framework)。模块归因、定向代码变异与 BRIGHT Biology 检索评测已可运行，跨领域泛化和先验库收益仍待系统验证。
 
 ## 项目目标
 
-本项目通过受控干预，估计模块化系统的单模块效应、模块间交互效应，并在明确的联盟价值函数下进行贡献分配。核心目标是**精确归因**，而不是自动演化 Harness。
+本项目研究如何通过模块化归因和受控干预定位 Harness 的薄弱环节，再结合 RAG 人类先验对目标模块做定向变异，并用开发集与 held-out 评测筛选版本。目标是提升知识密集型任务上的 Harness 能力，并检验改进能否跨领域迁移。合成模块归因和 Shapley 估计仍作为独立的实验基础设施保留。
 
 本项目独立开发。`bright-aegis` / baseline 仅作为未来外部效果对比对象，不作为架构、模块划分、提示词或实验流程模板。
 
@@ -16,6 +17,8 @@
 - 可配置的合成模块系统，支持模块主效应、两两交互、任务异质性和随机噪声。
 - OpenAI-compatible LLM 接口，支持连接本地 vLLM 服务。
 - 四模块知识问答 Harness 候选实现，以及同一模型承担 Solver / Proposer / Critic 的单轮 Self-Evolve MVP。
+- 多题执行轨迹诊断、Critic 定向消融、先验引导的单模块 Python 变异及 dev / held-out 版本门。
+- BRIGHT Biology 预处理候选池上的 nDCG@10 评测适配器；目前只覆盖检索排序，不代表端到端问答或跨领域泛化结论。
 - H200 单卡 vLLM + PBS 作业模板（48 小时上限）。
 - 对小规模模块系统枚举完整 `2^n` 联盟。
 - 显式记录绕过（bypass）干预语义。
@@ -62,7 +65,9 @@ paf attribute-set --config configs/experiments/qa30_attribution.yaml --output da
 
 实验报告会逐题记录异常和有效配对覆盖率；候选默认需在 dev 与 held-out 上分别达到至少 0.01 的平均增益且 bootstrap 区间下界大于 0。候选模块每题最多调用 LLM 8 次。
 
-`qa30_attribution.yaml` 中包含 EvidencePreparation 去除文档元数据前缀的手写对照候选。单独验证该候选而不生成模型提案，可运行 `paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-reference-control --proposals 0`。候选源码通过 `source_file` 相对配置文件目录加载。本地工作区目前没有 BRIGHT 原始语料，`bright_ndcg10` adapter 仍需预处理好的候选文档和 gold ID 输入。
+`qa30_attribution.yaml` 中包含 EvidencePreparation 去除文档元数据前缀的手写对照候选。单独验证该候选而不生成模型提案，可运行 `paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-reference-control --proposals 0`。候选源码通过 `source_file` 相对配置文件目录加载。
+
+BRIGHT 原始语料和预处理后的 Biology 任务文件未包含在仓库中。运行 `bright_biology.yaml` 前，需要准备配置 `tasks_file` 指向的 `configs/tasks/bright_biology_50.yaml`；每题需包含候选 `documents` 和 `gold_doc_ids`。`bright_ndcg10` adapter 评测给定候选池上的检索排序，不负责下载或转换 BRIGHT 原始数据。
 
 若要四个模块各生成一个候选，可传 `--proposals 4` 并重复指定四个 `--target-module`。BRIGHT 风格预处理数据可将配置 `benchmark` 设为 `bright_ndcg10`；该适配器只归因查询理解和证据检索模块。
 
@@ -89,10 +94,10 @@ PYTHONPATH=src python -m precise_attribution.cli run \
 ## 研究边界与限制
 
 - 四模块 Harness 当前仍是候选分解；EvidenceRetrieval 内部采用确定性词项基线，不是完整 BM25/Dense/RRF/Cross-Encoder 实现。
-- Self-Evolve 当前仅进化 AnswerGenerator 系统提示词一轮；Critic 只作准入审查，程序化指标决定接受与否。
-- 当前评测使用轻量 token-F1 代理指标，不能作为正式知识任务结论。
+- 旧 `paf evolve` 命令仍是单轮 AnswerGenerator 提示词进化，Critic 负责提案准入；独立的 `paf attribute-set` 命令实现了代码级模块变异。
+- QA 示例使用轻量 token-F1；BRIGHT 适配器只评估预处理后的候选文档排序。当前实验结果不能单独证明通用知识密集型能力或跨领域迁移。
 
-- 合成归因实验仍不接入生产级 LLM Agent；另有独立的本地 LLM Harness MVP，但尚未接入正式真实检索基准。
+- 合成归因实验与 LLM Harness 进化是两条独立实验路径；BRIGHT Biology 已接入预处理候选池评测，但尚未实现从原始数据到完整端到端 RAG 的统一复现流程。
 - 当前仅支持二元模块状态和 `bypass` 干预；空输出、中性替换、替代实现已在设计中区分，但尚未实现为可执行策略。
 - 区间使用配对区块的正态近似（1.96 × 标准误），不是小样本精确区间或多重比较校正。
 - Shapley 对联盟均值精确枚举；“精确”指对已观测联盟价值函数精确计算，不代表因果机制真值。
