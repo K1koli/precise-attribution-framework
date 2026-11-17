@@ -8,12 +8,3 @@ dist/
 data/raw/*.jsonl
 data/derived/*
 data/validation/*
-
-# 本地备份（补丁前的原文件）
-.paf-backup-*/
-
-# macOS
-.DS_Store
-
-# 个人材料（不随仓库分发）
-hku_mphil_proposal.pdf
