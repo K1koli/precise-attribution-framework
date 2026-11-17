@@ -11,7 +11,7 @@ class FakeLLM:
         if self.responses:
             return self.responses.pop(0)
         system = messages[0]["content"]
-        if "改写为适合知识库检索" in system:
+        if "查询理解模块" in system:
             return "线粒体 主要功能 ATP 细胞呼吸"
         if "判断给定证据是否足以回答" in system:
             return '{"sufficient": true, "reason": "证据包含答案"}'
@@ -26,14 +26,14 @@ class FakeLLM:
         return "{}"
 
 
-def test_rag_harness_executes_seven_observable_modules():
+def test_rag_harness_executes_four_observable_modules():
     llm = FakeLLM()
     result = RAGHarness(llm, HarnessConfig()).run({
         "id": "t1", "question": "线粒体的主要功能是什么？",
         "documents": [{"id": "d1", "title": "线粒体", "text": "线粒体通过细胞呼吸产生 ATP，为细胞活动提供能量。"}],
     })
     assert result["answer"]
-    assert result["trace"]["module_order"] == ["QueryProcessor", "Retriever", "Ranker", "ContextBuilder", "ReasoningController", "AnswerGenerator", "Verifier"]
+    assert result["trace"]["module_order"] == ["QueryUnderstanding", "EvidenceRetrieval", "EvidencePreparation", "EvidenceReasoning"]
     assert result["verification"]["supported"] is True
 
 

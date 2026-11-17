@@ -1,32 +1,29 @@
 # 本地 LLM Harness 与 Self-Evolve MVP
 
 - 日期：2026-11-09
-- 状态：已实现的工程原型；七模块架构仍为 Proposed
+- 状态：已实现的工程原型；当前实验 Harness 为四模块候选架构
 - 模型部署目标：课题组 H200，Qwen3.8-27B BF16，单卡 vLLM
 
 ## 1. 当前实现范围
 
 本版本增加 OpenAI-compatible API 适配层，默认连接 `http://127.0.0.1:8000/v1`。同一个模型服务由三个逻辑角色共享：
 
-- **Solver**：通过七模块候选 Harness 执行知识问答。
+- **Solver**：通过四模块候选 Harness 执行知识问答。
 - **Proposer**：根据开发集失败摘要提出答案生成提示词候选。
 - **Critic**：审查候选是否存在评测泄漏、任务硬编码或违反证据约束；只决定是否允许进入实验。
 
 Critic 的批准不是效果证据。候选是否接受由程序化开发集指标决定。
 
-## 2. 七模块候选 Harness
+## 2. 四模块候选 Harness
 
 | 模块 | 当前实现 | LLM 调用 |
 |---|---|---|
-| QueryProcessor | 查询改写 | 是 |
-| Retriever | 词项重叠检索基线 | 否 |
-| Ranker | 可观测的确定性融合/排序基线 | 否 |
-| ContextBuilder | 去重前的基础上下文拼接与长度限制 | 否 |
-| ReasoningController | 证据充分性判断 | 是 |
-| AnswerGenerator | 基于证据生成答案 | 是 |
-| Verifier | 证据支持度与完整性判断 | 是 |
+| QueryUnderstanding | 问题理解与查询改写 | 是 |
+| EvidenceRetrieval | 词项召回、融合与排序 | 否 |
+| EvidencePreparation | 证据筛选与上下文构造 | 否 |
+| EvidenceReasoning | 充分性判断、答案生成、验证与一次修订 | 是 |
 
-这是一套可运行的中粒度候选，不代表已证明是最优模块划分。Retriever 目前不是 BM25/Dense/Hybrid 的完整实现；Ranker 也尚未实现 RRF 或 Cross-Encoder。模块内部操作的替换和独立干预仍待后续实现。
+这是用于首轮代码变异验证的粗粒度候选，不代表已证明是最优模块划分。EvidenceRetrieval 目前不是 BM25/Dense/Hybrid 的完整实现。四个模块均有独立接口和消融点；算法实现候选可按契约整体替换。
 
 ## 3. 一轮 Self-Evolve 流程
 
@@ -38,7 +35,7 @@ Critic 的批准不是效果证据。候选是否接受由程序化开发集指�
 6. 只有候选平均 token-F1 至少超过基线 `minimum_gain`，才接受候选。
 7. 可选 `tasks.ood` 只在最终选定版本上生成报告，`used_for_acceptance=false`，不参与选择或迭代。
 
-当前进化对象仅为 `AnswerGenerator` 的系统提示词；不自动改 Python 代码、检索算法、模块边界或模型权重。该实现是单轮 MVP，不是完整自主进化系统。
+本节所述旧 `evolve` 命令仍只改答案提示词。多题 `attribute-set` 另有受约束的源码级单模块变异流程，说明见 `docs/code_level_mutation.md`；它不自动修改评测器、适配器或模块边界。
 
 ## 4. 运行配置
 

@@ -15,7 +15,7 @@
 
 - 可配置的合成模块系统，支持模块主效应、两两交互、任务异质性和随机噪声。
 - OpenAI-compatible LLM 接口，支持连接本地 vLLM 服务。
-- 七模块知识问答 Harness 候选实现，以及同一模型承担 Solver / Proposer / Critic 的单轮 Self-Evolve MVP。
+- 四模块知识问答 Harness 候选实现，以及同一模型承担 Solver / Proposer / Critic 的单轮 Self-Evolve MVP。
 - H200 单卡 vLLM + PBS 作业模板（48 小时上限）。
 - 对小规模模块系统枚举完整 `2^n` 联盟。
 - 显式记录绕过（bypass）干预语义。
@@ -44,6 +44,28 @@ paf llm-check --config configs/self_evolve/qwen38_27b_h200.yaml
 paf evolve --config configs/self_evolve/qwen38_27b_h200.yaml --output data/derived/h200-self-evolve
 ```
 
+单问题模块归因（同样需要本地 LLM 服务）：
+
+```bash
+paf attribute-task --config configs/experiments/single_task_attribution.yaml --output data/derived/single-task
+```
+
+该命令运行基线、四个逐模块旁路消融和配置中列出的单模块候选，输出完整模块 Trace、token-F1 对比及 JSONL 运行记录。
+
+多题代码级归因与变异：
+
+```bash
+paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-code-evolve --proposals 2
+```
+
+默认先让 Critic 对照 dev 集高分/低分执行轨迹，提名可疑模块；系统只对被提名模块做 bypass 消融，再把诊断与消融结果交给 Proposer 生成单模块 Python 候选。候选经过源码约束检查、契约 smoke 和 dev 对比，再用 held-out 验证。可重复传入 `--target-module` 限定 Critic 的诊断范围。候选源码及被接受的版本保存在输出目录；模块接口和限制见 `docs/code_level_mutation.md`。
+
+实验报告会逐题记录异常和有效配对覆盖率；候选默认需在 dev 与 held-out 上分别达到至少 0.01 的平均增益且 bootstrap 区间下界大于 0。候选模块每题最多调用 LLM 8 次。
+
+`qa30_attribution.yaml` 中包含 EvidencePreparation 去除文档元数据前缀的手写对照候选。单独验证该候选而不生成模型提案，可运行 `paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-reference-control --proposals 0`。候选源码通过 `source_file` 相对配置文件目录加载。本地工作区目前没有 BRIGHT 原始语料，`bright_ndcg10` adapter 仍需预处理好的候选文档和 gold ID 输入。
+
+若要四个模块各生成一个候选，可传 `--proposals 4` 并重复指定四个 `--target-module`。BRIGHT 风格预处理数据可将配置 `benchmark` 设为 `bright_ndcg10`；该适配器只归因查询理解和证据检索模块。
+
 集群 PBS 模板见 `scripts/run_self_evolve_h200.pbs`；提交前必须设置 `MODEL_PATH` 并按集群环境检查模块加载、虚拟环境和队列资源字段。详细说明见 `docs/llm_self_evolve_mvp.md`。
 
 不安装命令行入口时，也可运行：
@@ -66,7 +88,7 @@ PYTHONPATH=src python -m precise_attribution.cli run \
 
 ## 研究边界与限制
 
-- LLM Harness 当前是七模块候选原型；Retriever/Ranker 是确定性词项基线，不是完整 BM25/Dense/RRF/Cross-Encoder 实现。
+- 四模块 Harness 当前仍是候选分解；EvidenceRetrieval 内部采用确定性词项基线，不是完整 BM25/Dense/RRF/Cross-Encoder 实现。
 - Self-Evolve 当前仅进化 AnswerGenerator 系统提示词一轮；Critic 只作准入审查，程序化指标决定接受与否。
 - 当前评测使用轻量 token-F1 代理指标，不能作为正式知识任务结论。
 
@@ -102,5 +124,7 @@ docs/                    项目设计文档
 - `docs/research_decisions.md`
 - `docs/module_decomposition_study.md`（七模块候选划分研究，Proposed）
 - `docs/llm_self_evolve_mvp.md`（本地模型接入与 Self-Evolve MVP）
+- `docs/code_level_mutation.md`（四模块接口、源码级变异与 benchmark adapter）
+- `docs/human_prior_library.md`（论文来源与先验算子库设计）
 
 设计变更遵循日期化历史原则。未获用户确认的研究方向只能标记为“待讨论”。

@@ -1,0 +1,220 @@
+schema_version: 1
+library_id: rag-human-priors-v1
+description: >-
+  Research-derived, testable priors for knowledge-intensive retrieval and reasoning.
+  Each entry separates Critic diagnostic knowledge from Proposer implementation guidance.
+  These are candidate operators, not guaranteed improvements.
+operators:
+  - id: query_decomposition_with_entity_carryover
+    title: Query decomposition with entity carryover
+    modules: [QueryUnderstanding, EvidenceRetrieval]
+    implementation_status: available
+    sources:
+      - title: Question Decomposition for Retrieval-Augmented Generation
+        authors: Ammann, Golde, and Akbik
+        year: 2025
+        venue: ACL Student Research Workshop
+        url: https://aclanthology.org/2025.acl-srw.32/
+      - title: Mitigating Lost-in-Retrieval Problems in Retrieval Augmented Multi-Hop Question Answering
+        authors: Zhu et al.
+        year: 2025
+        venue: ACL
+        url: https://aclanthology.org/2025.acl-long.1089/
+    evidence_summary: >-
+      Decomposing multi-hop questions and retrieving for each sub-question can improve
+      complementary evidence coverage; entity carryover matters because underspecified
+      follow-up questions can lose key entities and degrade retrieval.
+    critic:
+      diagnostic_signals:
+        - A question requires multiple facts or relations, but the query trace contains only one broad query.
+        - A follow-up query uses a pronoun or implicit entity instead of carrying the resolved entity forward.
+        - Errors correlate with missing complementary documents across reasoning steps.
+      falsification_checks:
+        - Check whether focused subqueries retrieve evidence absent from the main query's results.
+        - Check whether entity-complete queries outperform underspecified queries under the same retrieval budget.
+    proposer:
+      implementation_guidance:
+        - Preserve the original question as the first query and add only a small number of focused subqueries when multiple facts are required.
+        - Resolve references to explicit entities and preserve names, dates, relations, and constraints from the question.
+        - Keep the existing queries list contract and deduplicate near-identical queries.
+      invariants:
+        - Do not invent entities or assumptions absent from the question or retrieved evidence.
+        - Bound query count and avoid decomposing atomic questions.
+      risks:
+        - Extra queries can add irrelevant documents and increase retrieval cost.
+
+  - id: iterative_retrieval_conditioned_on_reasoning
+    title: Reasoning-conditioned iterative retrieval
+    modules: [EvidenceReasoning, EvidenceRetrieval]
+    implementation_status: requires_harness_control_flow
+    sources:
+      - title: Interleaving Retrieval with Chain-of-Thought Reasoning for Knowledge-Intensive Multi-Step Questions
+        authors: Trivedi et al.
+        year: 2023
+        venue: ACL
+        url: https://aclanthology.org/2023.acl-long.557/
+      - title: Active Retrieval Augmented Generation
+        authors: Jiang et al.
+        year: 2023
+        venue: EMNLP
+        url: https://aclanthology.org/2023.emnlp-main.495/
+    evidence_summary: >-
+      For multi-step questions, retrieval needs can depend on intermediate deductions;
+      interleaving retrieval with reasoning or triggering retrieval when predicted content
+      is uncertain can improve evidence acquisition on evaluated knowledge-intensive tasks.
+    critic:
+      diagnostic_signals:
+        - The first retrieval contains one hop but the answer requires a later relation or bridge entity.
+        - The reasoning trace identifies a specific missing fact, but no subsequent retrieval is issued.
+        - Low-confidence or unsupported answer claims appear despite an actionable missing-information signal.
+      falsification_checks:
+        - Compare one-shot retrieval with a bounded second retrieval using the unresolved sub-question.
+    proposer:
+      implementation_guidance:
+        - Treat each intermediate step as a possible retrieval query and retrieve only for unresolved information.
+        - Stop when evidence is sufficient or a small retrieval-round budget is exhausted.
+        - Preserve provenance for evidence added at each round.
+      invariants:
+        - Do not claim this operator is implementable by changing one current module: the fixed Harness currently has no retrieval-reasoning loop.
+      risks:
+        - Additional calls can raise latency, amplify reasoning errors, or retrieve from a mistaken intermediate conclusion.
+
+  - id: retrieval_quality_check_and_correction
+    title: Retrieval quality check and corrective action
+    modules: [EvidenceRetrieval]
+    implementation_status: available_within_module
+    sources:
+      - title: Corrective Retrieval Augmented Generation
+        authors: Yan, Gu, Zhu, and Ling
+        year: 2024
+        venue: arXiv preprint (2024)
+        url: https://arxiv.org/abs/2401.15884
+      - title: Corrective Retrieval Augmented Generation
+        authors: Yan, Gu, Zhu, and Ling
+        year: 2026
+        venue: Findings of AACL-IJCNLP 2026
+        url: https://aclanthology.org/2026.findings-aacl.151/
+    evidence_summary: >-
+      CRAG evaluates retrieved-document quality and uses the quality signal to choose
+      corrective actions; its paper also proposes decomposition and recomposition to
+      focus on useful evidence and filter irrelevant content.
+    critic:
+      diagnostic_signals:
+        - Top-ranked documents have weak query coverage or do not contain answer-bearing evidence.
+        - The final answer reports insufficient evidence despite a nonempty retrieval result.
+        - Irrelevant retrieved passages appear to distract the answer generator.
+      falsification_checks:
+        - Compare answers after retaining only documents judged relevant by an independent relevance check.
+        - When the candidate pool permits, compare a corrected query against the original query at a fixed candidate budget.
+    proposer:
+      implementation_guidance:
+        - Estimate relevance of the retrieved set before passing it downstream.
+        - If quality is low, revise or diversify the query and rerank/merge candidates within a strict call and result budget.
+        - If quality is adequate, leave the candidate set unchanged.
+      invariants:
+        - Do not assume external web search is available; the current benchmark supplies a fixed candidate corpus.
+        - Preserve document IDs and original text in retrieval outputs.
+      risks:
+        - A learned or LLM-based relevance judge can be miscalibrated and may discard useful complementary evidence.
+
+  - id: selective_evidence_compression
+    title: Selective evidence compression
+    modules: [EvidencePreparation]
+    implementation_status: available
+    sources:
+      - title: "RECOMP: Improving Retrieval-Augmented LMs with Compression and Selective Augmentation"
+        authors: Xu, Shi, and Choi
+        year: 2024
+        venue: ICLR
+        url: https://proceedings.iclr.cc/paper_files/paper/2024/hash/bda88ed2892f5e61c9a9bf215c566913-Abstract-Conference.html
+    evidence_summary: >-
+      RECOMP studies extractive and abstractive compression of retrieved documents and
+      selective augmentation, including returning no context when retrieval adds no value.
+      Its reported compressors are trained; a hand-written extractor is not equivalent.
+    critic:
+      diagnostic_signals:
+        - Context is dominated by irrelevant or repetitive passages while useful evidence is present.
+        - Relevant evidence is truncated before answer generation.
+        - Adding retrieved context degrades answers on cases where documents are irrelevant.
+      falsification_checks:
+        - Compare full context with a shorter evidence-focused context while preserving the same source documents.
+        - Measure both answer quality and whether extracted claims remain attributable to source documents.
+    proposer:
+      implementation_guidance:
+        - Prefer extractive selection of question-relevant sentences before abstractive rewriting.
+        - Keep a source ID or provenance marker attached to each selected sentence.
+        - Use a fixed token/character budget and allow an empty context only when evidence is judged irrelevant or unhelpful.
+      invariants:
+        - Never remove potentially decisive qualifiers, dates, negation, or entity names merely to shorten context.
+        - Do not paraphrase evidence as if the paraphrase were a source quote.
+      risks:
+        - Compression can remove bridge facts or qualifiers; abstractive summaries can introduce unsupported details.
+
+  - id: relevance_support_and_use_checks
+    title: Separate relevance, support, and answer-use checks
+    modules: [EvidenceRetrieval, EvidenceReasoning]
+    implementation_status: available_within_module
+    sources:
+      - title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+        authors: Asai et al.
+        year: 2024
+        venue: ICLR
+        url: https://openreview.net/forum?id=hSyW5go0v8
+      - title: "Provenance: A Light-weight Fact-checker for Retrieval Augmented LLM Generation Output"
+        authors: Sankararaman et al.
+        year: 2024
+        venue: EMNLP Industry Track
+        url: https://aclanthology.org/2024.emnlp-industry.97/
+    evidence_summary: >-
+      Self-RAG separates retrieval need, passage relevance, and generation support/use;
+      Provenance scores factual consistency of generated output against context and can
+      trace suspect output to context chunks. Self-RAG's original results rely on training
+      a model with reflection tokens; this library records the evaluation distinctions,
+      not a claim that prompting reproduces its trained system.
+    critic:
+      diagnostic_signals:
+        - Retrieved evidence is relevant but does not actually support the generated answer.
+        - The answer contains claims with no identifiable supporting passage.
+        - Relevant evidence exists but is ignored or contradicted in the answer.
+      falsification_checks:
+        - Evaluate relevance, claim-level support, and answer completeness as separate outcomes.
+        - Check whether revisions remove unsupported claims without losing supported facts.
+    proposer:
+      implementation_guidance:
+        - Verify atomic answer claims against the supplied context and record supporting document IDs.
+        - Distinguish unsupported, contradicted, and incomplete answers instead of collapsing them into one boolean.
+        - Revise only claims implicated by the evidence check; abstain when evidence is insufficient.
+      invariants:
+        - A relevance score alone is not proof that a passage supports an answer claim.
+        - Do not infer truth from groundedness when the source may be stale or contradictory.
+      risks:
+        - LLM self-critique may share the generator's blind spots; NLI-style checking also has domain and calibration limits.
+
+  - id: complexity_aware_retrieval_budget
+    title: Complexity-aware retrieval budget
+    modules: [QueryUnderstanding, EvidenceRetrieval, EvidenceReasoning]
+    implementation_status: requires_harness_control_flow
+    sources:
+      - title: "Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity"
+        authors: Jeong et al.
+        year: 2024
+        venue: NAACL
+        url: https://aclanthology.org/2024.naacl-long.389/
+    evidence_summary: >-
+      Adaptive-RAG routes questions among no-retrieval, single-step retrieval, and
+      multi-step retrieval strategies according to question complexity, aiming to balance
+      answer quality and computational cost.
+    critic:
+      diagnostic_signals:
+        - Simple questions incur repeated retrieval/LLM calls without measurable benefit.
+        - Multi-hop questions fail under a single broad retrieval despite requiring multiple facts.
+      falsification_checks:
+        - Compare answer quality and call cost across complexity buckets for one-shot and multi-step policies.
+    proposer:
+      implementation_guidance:
+        - Route simple questions to a low-cost path and multi-hop questions to a bounded multi-step path.
+        - Calibrate complexity decisions on development data and track both quality and cost.
+      invariants:
+        - The current Harness always executes its four modules and has no branch/router contract; this operator requires a Harness control-flow extension.
+      risks:
+        - Misrouting can skip needed retrieval or spend extra calls; complexity labels can be dataset-dependent.

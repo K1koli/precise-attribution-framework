@@ -197,6 +197,8 @@ V1 的成功标准不是“能运行一个复杂 Agent”，而是：在已知�
 
 ## 11. 本地 LLM Harness 实现增补（2026-11-09）
 
+> 历史状态记录；当前 Harness 演化方案见第 12 节。
+
 新增实现位于 `harness/`、`llm/` 与 `evolution/`：
 
 - `OpenAICompatibleClient` 通过本地 vLLM OpenAI-compatible endpoint 调用同一个模型服务。
@@ -205,3 +207,7 @@ V1 的成功标准不是“能运行一个复杂 Agent”，而是：在已知�
 - OOD 样例仅用于最终报告，不参与接受决策。
 
 该增补不改变七模块架构的 Proposed 状态，也不改变“归因与演化分离”的已确认决策。当前 Self-Evolve 是单轮提示词级 MVP，不是代码级或多轮自主进化。细节和限制见 `docs/llm_self_evolve_mvp.md`。
+
+## 12. 四模块代码级变异增补（2026-11-12）
+
+真实 Harness 的实验候选已收敛为 QueryUnderstanding、EvidenceRetrieval、EvidencePreparation、EvidenceReasoning 四模块；benchmark adapter 和 scorer 位于模块外。`attribute-set` 支持单模块 Python 源码候选、契约 smoke、dev 筛选和 held-out 门控。该分解是实验候选，不宣称是知识密集型任务的最终最优划分。实现边界见 `docs/code_level_mutation.md`。

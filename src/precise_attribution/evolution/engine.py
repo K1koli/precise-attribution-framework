@@ -28,7 +28,7 @@ def run_self_evolve(config: dict[str, Any], llm: Any, output_dir: str | Path) ->
     if not tasks:
         raise ValueError("tasks.development 不能为空")
     baseline_score, baseline_runs = _evaluate(llm, tasks, current_prompt, "baseline-v1")
-    failures = [x for x in baseline_runs if x["score"] < float(config.get("evolution", {}).get("failure_threshold", 0.8))]
+    failures = [x for x in baseline_runs if x["score"] is not None and x["score"] < float(config.get("evolution", {}).get("failure_threshold", 0.8))]
     failure_summary = json.dumps({"mean_token_f1": baseline_score, "failed_count": len(failures), "task_count": len(tasks)}, ensure_ascii=False)
     examples = [{"task_id": x["task_id"], "answer": x["answer"], "score": x["score"]} for x in failures[:5]]
 

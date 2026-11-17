@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -48,6 +49,66 @@ class Proposer:
 @dataclass
 class Critic:
     llm: ChatClient
+
+    def diagnose_modules(
+        self,
+        examples: list[dict[str, Any]],
+        available_modules: list[str],
+        prior_cards: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Compare successful and failed dev traces and nominate modules to ablate."""
+        data = _chat_json(self.llm, [
+            {
+                "role": "system",
+                "content": (
+                    "你是 Harness 归因 Critic。比较正确与错误样例的模块级执行轨迹，"
+                    "提出可被后续消融检验的模块假设。不要把相关性说成因果结论；"
+                    "不能查看或推测标准答案。可使用先验库中的论文方法来形成假设，"
+                    "但只能引用其提供的 prior id，且先验不能替代轨迹证据。"
+                    "只从给定模块中选择 1 到 3 个最可疑模块。"
+                    '只输出 JSON：{"summary":"...","hypotheses":[{"module":"...",'
+                    '"evidence":["task_id: 轨迹观察"],"mechanism":"...",'
+                    '"ablation_question":"...","confidence":0.0,"prior_ids":["..."]}]}。'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"可诊断模块：{available_modules}\n"
+                    f"可用人类先验算子（含来源、诊断线索和可证伪检查）：{json.dumps(prior_cards or [], ensure_ascii=False)}\n"
+                    f"正确/错误样例轨迹（仅开发集）：{json.dumps(examples, ensure_ascii=False)}"
+                ),
+            },
+        ], temperature=0.0, max_tokens=900)
+        raw_hypotheses = data.get("hypotheses", [])
+        if not isinstance(raw_hypotheses, list):
+            raise ValueError("Critic hypotheses 必须是列表")
+        hypotheses = []
+        seen = set()
+        prior_by_id = {item.get("id"): item for item in (prior_cards or [])}
+        for item in raw_hypotheses[:3]:
+            if not isinstance(item, dict):
+                continue
+            module = item.get("module")
+            if module not in available_modules or module in seen:
+                continue
+            seen.add(module)
+            proposed_prior_ids = item.get("prior_ids", [])
+            if not isinstance(proposed_prior_ids, list):
+                proposed_prior_ids = []
+            selected_prior_ids = [
+                prior_id for prior_id in proposed_prior_ids
+                if prior_id in prior_by_id and module in prior_by_id[prior_id].get("modules", [])
+            ]
+            hypotheses.append({
+                "module": module,
+                "evidence": item.get("evidence", []) if isinstance(item.get("evidence", []), list) else [],
+                "mechanism": str(item.get("mechanism", "")),
+                "ablation_question": str(item.get("ablation_question", "")),
+                "confidence": item.get("confidence"),
+                "prior_ids": selected_prior_ids,
+            })
+        return {"summary": str(data.get("summary", "")), "hypotheses": hypotheses}
 
     def review(self, current_prompt: str, proposal: dict[str, Any]) -> dict[str, Any]:
         data = _chat_json(self.llm, [
