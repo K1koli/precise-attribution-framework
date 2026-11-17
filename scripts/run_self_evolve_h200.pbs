@@ -94,5 +94,5 @@ else:
 PY
 
 # 若使用非默认端口，配置文件中的 base_url 也要相应修改。
-paf llm-check --config configs/self_evolve/qwen38_27b_h200.yaml
-paf evolve --config configs/self_evolve/qwen38_27b_h200.yaml --output data/derived/h200-self-evolve
+paf llm-check --config configs/experiments/bright_biology.yaml
+paf attribute-set --config configs/experiments/bright_biology.yaml --output data/derived/bright-bio --proposals 2

@@ -1,3 +1,3 @@
-from .engine import run_self_evolve
+from .multi_task import run_multi_task_attribution
 
-__all__ = ["run_self_evolve"]
+__all__ = ["run_multi_task_attribution"]
