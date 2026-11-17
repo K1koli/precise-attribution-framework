@@ -17,7 +17,7 @@
 - 可配置的合成模块系统，支持模块主效应、两两交互、任务异质性和随机噪声。
 - OpenAI-compatible LLM 接口，支持连接本地 vLLM 服务。
 - 四模块知识问答 Harness 候选实现，以及同一模型承担 Solver / Proposer / Critic 的单轮 Self-Evolve MVP。
-- 多题执行轨迹诊断、Critic 定向消融、先验引导的单模块 Python 变异及 dev / held-out 版本门。
+- 多题执行轨迹诊断、Critic 定向消融、先验引导的单模块 Python 变异及 train / dev / test 数据分离。
 - BRIGHT Biology 预处理候选池上的 nDCG@10 评测适配器；目前只覆盖检索排序，不代表端到端问答或跨领域泛化结论。
 - H200 单卡 vLLM + PBS 作业模板（48 小时上限）。
 - 对小规模模块系统枚举完整 `2^n` 联盟。
@@ -40,6 +40,39 @@ pytest
 paf run --config configs/experiments/demo.yaml --output data/derived/demo
 ```
 
+### DeepSeek API 或本地 vLLM
+
+`llm.provider` 支持 `deepseek`、`vllm` 和 `openai_compatible`。
+旧配置未指定 provider 时仍按 vLLM 处理。
+
+- 本地实验：`configs/experiments/qa30_attribution.yaml`。
+- DeepSeek 实验：`configs/experiments/qa30_deepseek.yaml`，默认 `deepseek-flash`。
+
+DeepSeek Key 仅从 `DEEPSEEK_API_KEY` 环境变量读取。在 macOS 默认 zsh 终端中：
+
+```zsh
+read -rs 'DEEPSEEK_API_KEY?输入 DeepSeek API Key（输入隐藏）: '
+export DEEPSEEK_API_KEY
+printf '\n'
+```
+
+然后在同一个终端、仓库目录运行：
+
+```bash
+paf llm-check --config configs/experiments/qa30_deepseek.yaml
+paf attribute-set --config configs/experiments/qa30_deepseek.yaml --output data/derived/qa30-deepseek
+```
+
+`llm-check` 只检查模型列表接口；真实生成是否成功需通过模型请求验证。
+环境变量仅对该终端及其子进程生效，不会自动传递给其他已经打开的应用。
+不要把真实 Key 写入 YAML、聊天或 Git；本地服务需要认证时也可设置 `api_key_env`。
+
+DeepSeek 默认关闭思考（`disable_thinking: true`），适配现有较小的角色输出预算，
+只发送 DeepSeek 的 `thinking` 字段，不发送 vLLM 专用参数。
+vLLM 保留 `PAF_DISABLE_THINKING` 行为；显式配置 `disable_thinking` 优先于环境变量。
+若启用思考，需要重新评估输出预算。通用兼容 provider 不发送这两类扩展字段。
+接口和模型名称参考 [DeepSeek 官方文档](https://api-docs.deepseek.com/)。
+
 LLM Self-Evolve（需要先启动 OpenAI-compatible vLLM 服务）：
 
 ```bash
@@ -55,15 +88,21 @@ paf attribute-task --config configs/experiments/single_task_attribution.yaml --o
 
 该命令运行基线、四个逐模块旁路消融和配置中列出的单模块候选，输出完整模块 Trace、token-F1 对比及 JSONL 运行记录。
 
-多题代码级归因与变异：
+多题代码级归因与变异（默认 train/dev/test = 60%/20%/20%，测试集不参与接受）：
 
 ```bash
 paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-code-evolve --proposals 2
 ```
 
-默认先让 Critic 对照 dev 集高分/低分执行轨迹，提名可疑模块；系统只对被提名模块做 bypass 消融，再把诊断与消融结果交给 Proposer 生成单模块 Python 候选。候选经过源码约束检查、契约 smoke 和 dev 对比，再用 held-out 验证。可重复传入 `--target-module` 限定 Critic 的诊断范围。候选源码及被接受的版本保存在输出目录；模块接口和限制见 `docs/code_level_mutation.md`。
+最终版本确定后，单独运行测试（不能每轮据此选择改动）：
 
-实验报告会逐题记录异常和有效配对覆盖率；候选默认需在 dev 与 held-out 上分别达到至少 0.01 的平均增益且 bootstrap 区间下界大于 0。候选模块每题最多调用 LLM 8 次。
+```bash
+paf evaluate-test --config configs/experiments/qa30_attribution.yaml --experiment data/derived/qa30-code-evolve
+```
+
+默认先让 Critic 对照 train 集高分/低分执行轨迹及标准答案，提名可疑模块；系统只对被提名模块做 bypass 消融，再把诊断与消融结果交给 Proposer 生成单模块 Python 候选。候选经过源码约束检查、契约 smoke 和 dev 对比，由 dev 决定接受；test 仅在确定最终版本后通过独立命令评测。可重复传入 `--target-module` 限定 Critic 的诊断范围。候选源码及被接受的版本保存在输出目录；模块接口和限制见 `docs/code_level_mutation.md`。
+
+实验报告会逐题记录异常和有效配对覆盖率；候选默认需在 dev 上达到至少 0.01 的平均增益且 bootstrap 区间下界大于 0。候选模块每题最多调用 LLM 8 次。
 
 `qa30_attribution.yaml` 中包含 EvidencePreparation 去除文档元数据前缀的手写对照候选。单独验证该候选而不生成模型提案，可运行 `paf attribute-set --config configs/experiments/qa30_attribution.yaml --output data/derived/qa30-reference-control --proposals 0`。候选源码通过 `source_file` 相对配置文件目录加载。
 
@@ -133,3 +172,36 @@ docs/                    项目设计文档
 - `docs/human_prior_library.md`（论文来源与先验算子库设计）
 
 设计变更遵循日期化历史原则。未获用户确认的研究方向只能标记为“待讨论”。
+
+### PBS：本地模型与三路划分实验（2026-11-17）
+
+`scripts/run_self_evolve_h200.pbs` 现在启动计算节点上的 vLLM 并运行
+`attribute-set`，不再运行旧的提示词级 `evolve`。保留原模板的队列、项目、
+单卡和 48 小时资源配置；提交前确认这些资源和账户适用于你。
+
+在服务器的仓库根目录提交（默认 1 个自动候选，保留配置中的 2 个人工对照）：
+
+```bash
+qsub scripts/run_self_evolve_h200.pbs
+```
+
+默认使用 `configs/experiments/qa30_attribution.yaml`，train/dev/test 比例为
+60%/20%/20%，seed=0。每个作业输出到 `data/derived/h200-attribution-<jobid>/`，
+默认不运行 test。vLLM 日志在 `logs/vllm-<jobid>.log`；PBS 输出采用默认作业日志名。
+
+环境要求沿用原脚本：`vllm/0.19.0` 模块、`$HOME/venvs/paf` 虚拟环境（Python
+3.12/3.13 和项目依赖）、共享模型路径 `/projects_vol/gp_wei.lu/base_model/Qwen3.8-27B`。
+可通过 `qsub -v` 覆盖 `PAF_VENV`、`VLLM_MODULE`、`MODEL_PATH`、`SERVED_MODEL_NAME`、
+`PORT`、`CONFIG_PATH`、`EXPERIMENT_DIR`、`PROPOSALS`、`TRAIN_RATIO`、`DEV_RATIO`、`SPLIT_SEED`。
+脚本使用当前仓库源码。模型名和端口自动同步到输出目录内的 `runtime_config.yaml`，
+原配置不被改写。已有非空输出目录不能重用。
+
+只有最终版本确定后，才提交测试作业，替换下面的 `<jobid>`：
+
+```bash
+qsub -v JOB_MODE=test,EXPERIMENT_DIR=data/derived/h200-attribution-<jobid> scripts/run_self_evolve_h200.pbs
+```
+
+test 模式复用该实验保存的配置，模型名必须一致；若开发时覆盖了模型路径或环境，
+测试作业也需要传入相同覆盖值。测试不会改变接受状态，不要按测试结果继续调参。
+脚本已做本地语法和配置测试，尚未在集群上实际提交验证。

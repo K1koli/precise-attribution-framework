@@ -20,7 +20,5 @@ tasks_file: configs/tasks/bright_biology_50.yaml
 
 gate:
   minimum_dev_gain: 0.01
-  minimum_heldout_gain: 0.01
   minimum_pair_coverage: 0.90
   require_positive_ci_lower_bound: true
-  evaluate_all_on_heldout: true

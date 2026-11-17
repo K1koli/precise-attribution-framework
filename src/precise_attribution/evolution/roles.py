@@ -56,14 +56,14 @@ class Critic:
         available_modules: list[str],
         prior_cards: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Compare successful and failed dev traces and nominate modules to ablate."""
+        """Compare successful and failed training traces and nominate modules to ablate."""
         data = _chat_json(self.llm, [
             {
                 "role": "system",
                 "content": (
                     "你是 Harness 归因 Critic。比较正确与错误样例的模块级执行轨迹，"
                     "提出可被后续消融检验的模块假设。不要把相关性说成因果结论；"
-                    "不能查看或推测标准答案。可使用先验库中的论文方法来形成假设，"
+                    "可使用提供的训练集标准答案定位偏差；不得把答案硬编码进修改。可使用先验库中的论文方法来形成假设，"
                     "但只能引用其提供的 prior id，且先验不能替代轨迹证据。"
                     "只从给定模块中选择 1 到 3 个最可疑模块。"
                     '只输出 JSON：{"summary":"...","hypotheses":[{"module":"...",'
@@ -76,7 +76,7 @@ class Critic:
                 "content": (
                     f"可诊断模块：{available_modules}\n"
                     f"可用人类先验算子（含来源、诊断线索和可证伪检查）：{json.dumps(prior_cards or [], ensure_ascii=False)}\n"
-                    f"正确/错误样例轨迹（仅开发集）：{json.dumps(examples, ensure_ascii=False)}"
+                    f"正确/错误样例轨迹与标准答案（仅训练集）：{json.dumps(examples, ensure_ascii=False)}"
                 ),
             },
         ], temperature=0.0, max_tokens=900)

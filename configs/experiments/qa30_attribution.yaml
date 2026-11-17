@@ -1,5 +1,6 @@
-# 30 题多题归因实验：dev 上做逐模块消融 + 候选生成，held-out 只做最终验证。
+# 30 题多题归因实验：train 上诊断与生成，dev 选择；test 通过 evaluate-test 最终评测。
 llm:
+  provider: vllm
   base_url: http://127.0.0.1:8000/v1
   model: Qwen3.8-27B
   api_key: EMPTY
@@ -32,8 +33,5 @@ priors:
 
 gate:
   minimum_dev_gain: 0.01
-  minimum_heldout_gain: 0.01
   minimum_pair_coverage: 0.90
   require_positive_ci_lower_bound: true
-  # 诊断：让每个候选都在同一批 held-out 上跑一遍（不参与接受决策）
-  evaluate_all_on_heldout: true

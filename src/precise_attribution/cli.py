@@ -16,7 +16,7 @@ from precise_attribution.validation.validator import validate_estimate
 from precise_attribution.llm.config import client_from_config
 from precise_attribution.evolution.engine import run_self_evolve
 from precise_attribution.evolution.single_task import run_single_task_attribution
-from precise_attribution.evolution.multi_task import run_multi_task_attribution, render_markdown
+from precise_attribution.evolution.multi_task import run_multi_task_attribution, render_markdown, evaluate_final_test
 from precise_attribution.evolution.prior_library import load_prior_library
 
 
@@ -88,13 +88,17 @@ def main() -> None:
     attribution_parser = subparsers.add_parser("attribute-task", help="对单个问题运行模块消融与候选比较")
     attribution_parser.add_argument("--config", required=True, help="包含 llm/task/harness/candidates 的 YAML 文件")
     attribution_parser.add_argument("--output", required=True, help="实验输出目录")
-    set_parser = subparsers.add_parser("attribute-set", help="对一组题目运行模块消融、候选生成与 held-out 验证")
+    set_parser = subparsers.add_parser("attribute-set", help="对一组题目运行模块消融、训练集候选生成与开发集选择")
     set_parser.add_argument("--config", required=True, help="包含 llm/tasks/harness（可选 candidates）的 YAML 文件")
     set_parser.add_argument("--output", required=True, help="实验输出目录")
-    set_parser.add_argument("--dev-ratio", type=float, default=0.67, help="dev 占比（其余为 held-out）")
+    set_parser.add_argument("--train-ratio", type=float, default=0.6, help="train 占比，默认 0.6")
+    set_parser.add_argument("--dev-ratio", type=float, default=0.2, help="dev 占比，剩余部分为最终 test")
     set_parser.add_argument("--seed", type=int, default=0, help="切分与 bootstrap 的随机种子")
     set_parser.add_argument("--proposals", type=int, default=2, help="生成多少个单模块源码候选")
     set_parser.add_argument("--target-module", action="append", choices=["QueryUnderstanding", "EvidenceRetrieval", "EvidencePreparation", "EvidenceReasoning"], help="限定 Critic 可诊断的模块范围；可重复传入，不指定时检查所有适用模块")
+    test_parser = subparsers.add_parser("evaluate-test", help="对冻结版本运行独立最终测试，不改变接受结果")
+    test_parser.add_argument("--config", required=True, help="原实验配置（题库必须保持一致）")
+    test_parser.add_argument("--experiment", required=True, help="attribute-set 的输出目录")
     args = parser.parse_args()
     if args.command == "run":
         run_command(args.config, args.output)
@@ -133,7 +137,7 @@ def main() -> None:
         )
         print(f"单问题归因实验完成；baseline {report['metric']}={report['baseline']['score']}")
         print(f"报告：{(Path(args.output) / 'single_task_attribution.json').resolve()}")
-    elif args.command == "attribute-set":
+    elif args.command in {"attribute-set", "evaluate-test"}:
         with Path(args.config).open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)
         if not isinstance(config, dict):
@@ -146,6 +150,14 @@ def main() -> None:
             raise ValueError("配置必须包含 tasks 列表，或用 tasks_file 指向题库")
         if len(tasks) < 3:
             raise ValueError("至少需要 3 道题")
+        if args.command == "evaluate-test":
+            result = evaluate_final_test(tasks, client_from_config(config), args.experiment)
+            print(f"最终测试完成（不参与接受）：{Path(args.experiment) / 'test_report.json'}")
+            print(f"test Δ：{result['delta']['mean']}")
+            return
+        legacy_gates = {"minimum_heldout_gain", "evaluate_all_on_heldout"} & set(config.get("gate", {}))
+        if legacy_gates:
+            raise ValueError(f"三路划分不再支持 {sorted(legacy_gates)}；请删除旧 held-out 门控，最终测试使用 evaluate-test")
         prior_config = config.get("priors")
         if isinstance(prior_config, dict) and prior_config.get("enabled") is False:
             prior_library = {"library_id": "disabled", "schema_version": 1, "operators": []}
@@ -163,23 +175,18 @@ def main() -> None:
         report = run_multi_task_attribution(
             tasks, client, args.output,
             harness_config=config.get("harness"), candidates=_resolve_candidate_sources(config, args.config),
-            dev_ratio=args.dev_ratio, seed=args.seed, max_proposals=args.proposals,
+            train_ratio=args.train_ratio, dev_ratio=args.dev_ratio, seed=args.seed, max_proposals=args.proposals,
             target_modules=args.target_module or config.get("mutation_targets"),
             benchmark=config.get("benchmark", "qa_token_f1"),
             minimum_dev_gain=float(config.get("gate", {}).get("minimum_dev_gain", 0.01)),
-            minimum_heldout_gain=float(config.get("gate", {}).get("minimum_heldout_gain", 0.01)),
             minimum_pair_coverage=float(config.get("gate", {}).get("minimum_pair_coverage", 0.90)),
             require_positive_ci=bool(config.get("gate", {}).get("require_positive_ci_lower_bound", True)),
-            evaluate_all_on_heldout=bool(config.get("gate", {}).get("evaluate_all_on_heldout", False)),
             bypass_inactive_modules=bool(config.get("bypass_inactive_modules", False)),
             prior_library=prior_library,
         )
         out = Path(args.output)
         (out / "multi_task_attribution.md").write_text(render_markdown(report), encoding="utf-8", errors="replace")
         print(f"多题归因完成；dev baseline {report['metric']}={report['baseline_dev_mean']:.4f}；最弱模块={report['weakest_module']}")
-        hv = report.get("heldout_validation") or {}
-        if hv.get("delta", {}).get("mean") is not None:
-            print(f"held-out Δ={hv['delta']['mean']:+.4f}（{hv['candidate_id']}）")
         print(f"版本接受：{report['selection']['accepted']}；{report['selection']['reason']}")
         print(f"报告：{(out / 'multi_task_attribution.md').resolve()}")
 

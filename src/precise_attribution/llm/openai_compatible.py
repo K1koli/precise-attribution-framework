@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -17,13 +17,17 @@ class LLMError(RuntimeError):
 class OpenAICompatibleClient:
     base_url: str = "http://127.0.0.1:8000/v1"
     model: str = "Qwen3.8-27B"
-    api_key: str = "EMPTY"
+    api_key: str = field(default="EMPTY", repr=False)
     timeout: float = 180.0
     max_retries: int = 2
     retry_backoff: float = 1.5
+    provider: str = "vllm"
+    disable_thinking: bool | None = None
 
     def __post_init__(self) -> None:
         self.base_url = self.base_url.rstrip("/")
+        if self.provider not in {"vllm", "deepseek", "openai_compatible"}:
+            raise ValueError("不支持的 LLM provider")
 
     def chat(
         self,
@@ -39,11 +43,16 @@ class OpenAICompatibleClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        # Qwen3.8 的 chat template 默认开思考：思考内容会吃满 max_tokens，导致
-        # content 变成空串（JSON 角色直接失败）。本地 vLLM 支持请求级
-        # chat_template_kwargs，用它把思考关掉；PAF_DISABLE_THINKING=0 可复原。
-        if os.environ.get("PAF_DISABLE_THINKING", "1") == "1":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # Provider-specific fields must not leak to other compatible APIs.
+        disabled = self.disable_thinking
+        if self.provider == "vllm":
+            if disabled is None:
+                disabled = os.environ.get("PAF_DISABLE_THINKING", "1") == "1"
+            if disabled:
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif self.provider == "deepseek":
+            # Small per-role output budgets require non-thinking mode by default.
+            payload["thinking"] = {"type": "disabled" if disabled is not False else "enabled"}
         if response_format:
             payload["response_format"] = response_format
         request = urllib.request.Request(

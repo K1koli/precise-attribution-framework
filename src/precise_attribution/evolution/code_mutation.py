@@ -144,7 +144,7 @@ def load_candidate_module(source: str, llm: Any, *, max_llm_calls: int = 8):
     return instance
 
 
-def propose_code_candidate(llm: Any, *, module: str, current_source: str, failures: list[dict[str, Any]], diagnosis: dict[str, Any] | None = None, dev_tasks: list[dict[str, Any]] | None = None, return_attempts: bool = False):
+def propose_code_candidate(llm: Any, *, module: str, current_source: str, failures: list[dict[str, Any]], diagnosis: dict[str, Any] | None = None, training_tasks: list[dict[str, Any]] | None = None, return_attempts: bool = False):
     contract = CONTRACTS[module]
     prompt = f"""你在改进知识密集型 QA Harness 的单个模块：{module}。
 接口契约：{contract}
@@ -186,8 +186,8 @@ Critic 诊断纲领及定向消融结果：
             # 兼容旧写法：模型直接给了完整类就用它；否则把方法体包进固定外壳
             source = candidate_text if "class CandidateModule" in candidate_text else wrap_body(candidate_text)
             validate_source(source)
-            if dev_tasks is not None:
-                reject_task_literals(source, dev_tasks)
+            if training_tasks is not None:
+                reject_task_literals(source, training_tasks)
             smoke_candidate(module, load_candidate_module(source, llm))
             return (source, attempt + 1) if return_attempts else source
         except Exception as exc:  # one targeted repair attempt for parse, validation, load, and smoke failures
@@ -307,7 +307,7 @@ def reject_task_literals(source: str, tasks: list[dict[str, Any]]) -> None:
         literals.extend(str(value) for value in task.get("gold_doc_ids", []) if len(str(value)) >= 3)
     for literal in literals:
         if literal and literal in source:
-            raise ValueError("候选源码包含 dev 问题、参考答案或文档的原文片段，疑似任务硬编码")
+            raise ValueError("候选源码包含 训练集问题、参考答案或文档的原文片段，疑似任务硬编码")
 
 
 def default_source(module: str) -> str:

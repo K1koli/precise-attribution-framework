@@ -1,21 +1,23 @@
 #!/bin/bash
-#PBS -N paf-self-evolve
+#PBS -N paf-attribution
 #PBS -q gpu_ded
 # 组里要求：单作业最多 2 卡、最长 48h。这里 1 卡 / 48h，符合规定。
 #PBS -P ds_ccds_wei.lu
 #PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
 #PBS -l walltime=48:00:00
 #PBS -j oe
-#PBS -o /home/n2602358e/logs/paf-self-evolve.log
+# PBS 输出使用默认的作业名/作业 ID 文件，避免写入其他用户目录。
 
 set -euo pipefail
 cd "${PBS_O_WORKDIR:-$PWD}"
 
 # GAAS 上没有全局 python/3.12；vLLM 由模块提供（同时带入 python 3.12.13 / torch / cuda 13.1）
-module load vllm/0.19.0
+module load "${VLLM_MODULE:-vllm/0.19.0}"
 
 # 项目虚拟环境（本项目 + PyYAML；vllm 通过模块的 PATH / PYTHONPATH 可见）
-source "$HOME/venvs/paf/bin/activate"
+source "${PAF_VENV:-$HOME/venvs/paf}/bin/activate"
+# 使用当前 checkout，避免意外运行旧的已安装版本。
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # 共享模型库（所有人可读）；可用环境变量覆盖
 MODEL_PATH="${MODEL_PATH:-/projects_vol/gp_wei.lu/base_model/Qwen3.8-27B}"
@@ -29,7 +31,20 @@ export PORT
 ulimit -n 65536 2>/dev/null || true
 
 LOG_DIR="${LOG_DIR:-logs}"
-mkdir -p "$LOG_DIR" data/derived/h200-self-evolve
+mkdir -p "$LOG_DIR"
+JOB_MODE="${JOB_MODE:-develop}"
+EXPERIMENT_DIR="${EXPERIMENT_DIR:-data/derived/h200-attribution-${PBS_JOBID:-local-$(date +%Y%m%d-%H%M%S)}}"
+CONFIG_PATH="${CONFIG_PATH:-configs/experiments/qa30_attribution.yaml}"
+PROPOSALS="${PROPOSALS:-1}"
+TRAIN_RATIO="${TRAIN_RATIO:-0.6}"
+DEV_RATIO="${DEV_RATIO:-0.2}"
+SPLIT_SEED="${SPLIT_SEED:-0}"
+
+# 先检查配置，避免配置错误占用 GPU 冷启动时间。
+RUNTIME_CONFIG=$(python scripts/prepare_pbs_run.py \
+  --config "$CONFIG_PATH" --experiment "$EXPERIMENT_DIR" --mode "$JOB_MODE" \
+  --port "$PORT" --model "$SERVED_MODEL_NAME")
+echo "mode=$JOB_MODE experiment=$EXPERIMENT_DIR config=$RUNTIME_CONFIG"
 
 # PBS 用 UUID 形式给出 GPU（CUDA_VISIBLE_DEVICES=GPU-xxxx），而本 vLLM 构建会
 # int(CUDA_VISIBLE_DEVICES) 直接崩。把 UUID 翻成真实的物理序号。
@@ -42,7 +57,7 @@ if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
       GPU-*)
         idx=$(env -u CUDA_VISIBLE_DEVICES nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null \
               | awk -F', *' -v u="$d" '$2==u {print $1; exit}')
-        [[ -z "$idx" ]] && idx=0
+        [[ -n "$idx" ]] || { echo "无法映射分配的 GPU UUID: $d" >&2; exit 2; }
         echo "mapped $d -> physical index $idx"
         ;;
       *) idx="$d" ;;
@@ -60,7 +75,9 @@ cleanup() {
     wait "$VLLM_PID" || true
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # 初期 max-model-len=32768、max-num-seqs=1，先稳定跑通；后续再提升上下文。
 vllm serve "$MODEL_PATH" \
@@ -93,6 +110,12 @@ else:
     raise SystemExit("vLLM 在 60 分钟内未就绪，请检查 vLLM 日志")
 PY
 
-# 若使用非默认端口，配置文件中的 base_url 也要相应修改。
-paf llm-check --config configs/self_evolve/qwen38_27b_h200.yaml
-paf evolve --config configs/self_evolve/qwen38_27b_h200.yaml --output data/derived/h200-self-evolve
+python -m precise_attribution.cli llm-check --config "$RUNTIME_CONFIG"
+if [[ "$JOB_MODE" == "develop" ]]; then
+  python -m precise_attribution.cli attribute-set --config "$RUNTIME_CONFIG" \
+    --output "$EXPERIMENT_DIR" --proposals "$PROPOSALS" \
+    --train-ratio "$TRAIN_RATIO" --dev-ratio "$DEV_RATIO" --seed "$SPLIT_SEED"
+else
+  python -m precise_attribution.cli evaluate-test --config "$RUNTIME_CONFIG" \
+    --experiment "$EXPERIMENT_DIR"
+fi
