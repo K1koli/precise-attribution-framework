@@ -1,5 +1,7 @@
 # 精确归因框架——实验协议
 
+> **范围说明（2026-11-17）：** 本文定义的是合成模块系统的归因与真值验证协议，不是当前 Harness 代码进化实验的完整协议。真实 Harness 的 Critic 诊断、定向消融、先验使用及候选门控见 [`code_level_mutation.md`](code_level_mutation.md)；BRIGHT 当前为含 gold 文档的 50 篇候选池评测，不能当作全库检索结果。
+
 - **文件：** `experiment_protocol.md`
 - **版本：** 1.0-draft
 - **状态：** 初始实验协议；具体参数可由试验结果修订

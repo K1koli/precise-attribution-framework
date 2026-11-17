@@ -1,5 +1,7 @@
 # 本地 LLM Harness 与 Self-Evolve MVP
 
+> **状态说明（2026-11-17）：** 本文描述的是旧 `paf evolve` 提示词级 MVP，作为历史实现保留。当前主要研究流程是 `paf attribute-set` 的四模块源码级变异，详见 [`code_level_mutation.md`](code_level_mutation.md)。不要把本文中的单轮提示词提案流程与当前 Critic 诊断、定向消融、先验引导的代码变异流程混为一谈。
+
 - 日期：2026-11-09
 - 状态：已实现的工程原型；当前实验 Harness 为四模块候选架构
 - 模型部署目标：课题组 H200，Qwen3.8-27B BF16，单卡 vLLM
@@ -69,7 +71,7 @@ paf evolve --config configs/self_evolve/qwen38_27b_h200.yaml --output data/deriv
 
 不要将服务暴露到公网，也不要在作业结束后遗留 vLLM 进程。
 
-## 6. 研究限制与后续工作
+## 6. 旧 MVP 的研究限制
 
 - token-F1 仅是首轮轻量代理指标；正式评测需补充任务特定 EM/F1、证据支持度、完整性、人工抽检和跨领域 OOD。
 - 同一模型承担三个角色，角色提示词隔离不等于认知或统计独立；Critic 可能有系统性自我偏好。

@@ -30,14 +30,14 @@ Critic 的输入仅来自 dev 集，不含标准答案或 gold 文档 ID；它�
 
 输出目录包含 `multi_task_attribution.json`、Markdown 报告、`candidate_modules/` 源码，以及（通过门槛时）`selected_module.py` 和带源码摘要/评测结果的 `selected_harness.json`。默认门槛要求 dev 与 held-out 均达到至少 0.01 的平均增益且 bootstrap CI 下界大于 0；正式结论还需多随机种子和更大 held-out。
 
-候选源码的 loader 在独立模块命名空间中执行，只暴露有限 builtins，并拒绝 import、直接文件访问、任意网络接口、反射、继承、装饰器、while 循环和 dunder 属性；模型只能经限次 `self.llm.chat` 调用。源码允许的名称必须能在受限运行环境中解析。常见字符串/容器方法列入属性白名单；`range` 单次限制 10000 次迭代。候选每题最多调用 LLM 8 次。它不是操作系统级安全沙箱；候选代码仍在当前 Python 进程中执行。Proposer 不能修改 Harness 外的 adapter、scorer 或版本门。
+候选源码的 loader 在独立模块命名空间中执行。为支持更有表达力的检索算法，候选可以导入 `math`、`re`、`collections`、`heapq`，使用 `lambda`、`try/except`，并在 `run` 方法内定义局部辅助函数；导入器和 AST 校验器会同时拒绝其他模块和未列入白名单的 `from-import`。文件、网络、进程、反射、继承、装饰器、异步、`while` 和 dunder 属性仍禁止。模型只能经限次 `self.llm.chat` 调用，每题最多 8 次；`range` 单次限制 10000 次迭代。此限制只允许纯 Python 标准库，不会自动安装或开放第三方 BM25 库。它不是操作系统级安全沙箱；候选代码仍在当前 Python 进程中执行。每个候选仍只改一个 Critic 提名模块，以保留模块归因；Proposer 不能修改 Harness 外的 adapter、scorer 或版本门。
 
 ## Benchmark adapter
 
 配置中的 `benchmark` 选择内置 adapter：
 
 - `qa_token_f1`：答案式 QA，任务需有 `question`、`documents`、`expected_answer`；四个模块均纳入归因。
-- `bright_ndcg10`：BRIGHT 风格检索评测，适配后的任务需有 `question`、候选 `documents`、`gold_doc_ids`；按二元相关性计算 nDCG@10，只对 QueryUnderstanding 和 EvidenceRetrieval 做归因。当前 adapter 不下载/解析 BRIGHT 原始文件，语料切分和字段转换由外部预处理完成，因此它是对接接口示例，不等同于已完成官方 BRIGHT 复现。
+- `bright_ndcg10`：BRIGHT 检索排序评测，适配后的任务需有 `question`、候选 `documents`、`gold_doc_ids`；按二元相关性计算 nDCG@10，只对 QueryUnderstanding 和 EvidenceRetrieval 做归因。当前 Biology 配置使用 103 道题、每题 50 篇候选；`scripts/bright_to_tasks.py` 从 Biology 全域语料做 BM25 初筛，并把该题全部 gold 文档强制并入候选池。adapter 本身不下载或索引原始语料，因此当前评测是带 gold 候选的重排实验，不是从 57,359 篇文档进行在线全库召回。
 
 示例配置：
 
