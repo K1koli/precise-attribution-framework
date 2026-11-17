@@ -256,6 +256,10 @@ class HarnessConfig:
     top_k_ranked: int = 5
     context_max_chars: int = 9000
     version: str = "baseline-v1"
+    retrieval_backend: str = "lexical"
+    query_mode: str = "llm"
+    corpus_file: str | None = None
+    corpus_sha256: str | None = None
 
 
 @dataclass
@@ -273,6 +277,12 @@ class RAGHarness:
             "EvidencePreparation": EvidencePreparation(self.config.context_max_chars),
             "EvidenceReasoning": EvidenceReasoning(self.llm, self.config.reasoning_system_prompt, self.config.answer_system_prompt, self.config.verifier_system_prompt),
         }
+        if self.config.query_mode == "identity":
+            from .bm25 import IdentityQuery
+            defaults["QueryUnderstanding"] = IdentityQuery()
+        if self.config.retrieval_backend == "bm25":
+            from .bm25 import BM25Retrieval
+            defaults["EvidenceRetrieval"] = BM25Retrieval()
         unknown = set(self.modules) - set(self.MODULES)
         if unknown:
             raise ValueError(f"未知 Harness 模块：{sorted(unknown)}")
@@ -327,6 +337,10 @@ class RAGHarness:
             "k": self.config.top_k_ranked,
             "retrieval_k": self.config.top_k_retrieval,
         }
+        if self.config.corpus_file:
+            retrieval_inputs.update(corpus_file=self.config.corpus_file,
+                                    corpus_sha256=self.config.corpus_sha256,
+                                    excluded_ids=task.get("excluded_ids", []))
         retrieval_result = step("EvidenceRetrieval", retrieval_inputs, lambda m: m.run(retrieval_inputs), lambda: {"documents": documents[:self.config.top_k_ranked]})
         prepared = step("EvidencePreparation", {"documents": retrieval_result["documents"]}, lambda m: m.run({"documents": retrieval_result["documents"]}), lambda: {"context": "\n\n".join(str(d.get("text", "")) for d in retrieval_result["documents"])[:self.config.context_max_chars]})
         outcome = step("EvidenceReasoning", {"question": question, "context": prepared["context"]}, lambda m: m.run({"question": question, "context": prepared["context"]}), lambda: {"answer": "", "verification": {"supported": False, "complete": False, "issues": ["bypassed"]}, "control": {"sufficient": False, "reason": "bypassed"}})

@@ -1,0 +1,17 @@
+#!/bin/bash
+#PBS -N paf-biology-continue
+#PBS -q gpu_ded
+#PBS -P ds_ccds_wei.lu
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+module load vllm/0.19.0
+source "$PWD/.venv/bin/activate"
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m pytest -q
+export PAF_VENV="$PWD/.venv"
+export CONFIG_PATH=configs/experiments/bright_biology_continue.yaml
+export JOB_MODE=develop TRAIN_RATIO=0.4 DEV_RATIO=0.3 SPLIT_SEED=42 PROPOSALS=1
+bash scripts/run_self_evolve_h200.pbs

@@ -37,11 +37,31 @@ def prepare(config_path: str, experiment: str, mode: str, port: int, model: str)
                api_key='EMPTY', disable_thinking=True)
     llm.pop('api_key_env', None)
     # Candidate/prior paths are relative to config; tasks_file follows the CLI's cwd rule.
+    if config.get('tasks_dir'):
+        task_dir = Path(config['tasks_dir']).resolve()
+        if not all((task_dir / f'{part}.json').is_file() for part in ('train', 'dev', 'test')):
+            raise FileNotFoundError(f'Prepared partitions missing: {task_dir}')
+        config['tasks_dir'] = str(task_dir)
     if config.get('tasks_file'):
         task_path = Path(config['tasks_file']).resolve()
         if not task_path.is_file():
             raise FileNotFoundError(task_path)
         config['tasks_file'] = str(task_path)
+    if config.get('proposal_seeds'):
+        raise ValueError('proposal_seeds 已停用，请使用 history_reports')
+    if config.get('history_reports'):
+        paths = [Path(p).resolve() for p in config['history_reports']]
+        if not all(p.is_file() for p in paths):
+            raise FileNotFoundError('历史实验报告不存在')
+        config['history_reports'] = [str(p) for p in paths]
+    harness = config.get('harness', {})
+    if harness.get('corpus_file'):
+        import hashlib
+        corpus = Path(harness['corpus_file']).resolve()
+        digest = hashlib.sha256(corpus.read_bytes()).hexdigest()
+        if digest != harness.get('corpus_sha256'):
+            raise ValueError('Corpus checksum mismatch')
+        harness['corpus_file'] = str(corpus)
     for candidate in config.get('candidates', []):
         if candidate.get('source_file'):
             source = (config_file.parent / candidate['source_file']).resolve()

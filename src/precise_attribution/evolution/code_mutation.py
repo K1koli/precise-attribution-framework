@@ -96,7 +96,7 @@ def validate_source(source: str) -> ast.Module:
     if isinstance(run_method, ast.AsyncFunctionDef) or run_method.decorator_list or len(run_method.args.args) != 2:
         raise ValueError("run 必须是 def run(self, inputs) 且不能带装饰器")
     nodes = list(ast.walk(tree))
-    declared_names = {"_tokens", "_json_from_text", "CandidateModule"}
+    declared_names = {"_tokens", "_json_from_text", "_bm25_retrieve", "CandidateModule"}
     declared_names.update(node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store))
     declared_names.update(node.arg for node in nodes if isinstance(node, ast.arg))
     declared_names.update(node.name for node in nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
@@ -131,12 +131,14 @@ def load_candidate_module(source: str, llm: Any, *, max_llm_calls: int = 8):
 
     This is a constrained loader, not an operating-system security sandbox.
     """
+    from precise_attribution.harness.bm25 import bm25_retrieve
     tree = validate_source(source)
     namespace: dict[str, Any] = {
         "__builtins__": _SAFE_BUILTINS,
         "__name__": "candidate_module",
         "_tokens": _tokens,
         "_json_from_text": _json_from_text,
+        "_bm25_retrieve": bm25_retrieve,
     }
     exec(compile(tree, "<candidate-module>", "exec"), namespace, namespace)
     instance = namespace["CandidateModule"]()
@@ -148,6 +150,9 @@ def propose_code_candidate(llm: Any, *, module: str, current_source: str, failur
     contract = CONTRACTS[module]
     prompt = f"""你在改进知识密集型 QA Harness 的单个模块：{module}。
 接口契约：{contract}
+全库 BM25 模式下，检索输入还包含 corpus_file、corpus_sha256、excluded_ids；documents 为空。
+可调用 _bm25_retrieve(inputs) 在冻结全库检索，返回 {{"documents": [...]}}；它使用 queries 和 k。
+不要修改语料引用、排除列表或输出数量 k，不要把全库放进 LLM 提示词。
 只修改这个模块的算法/实现方法。不能改变输入输出契约，不能把失败样例里的题目、参考答案或文档内容硬编码进候选。
 Critic 的轨迹诊断和针对性消融结果是待检验假设，不是已证实因果。请围绕其中的机制与修改目标做最小代码改动；不要扩展到无关模块。如果消融不支持诊断，也应谨慎处理，避免强行制造收益。
 候选类必须名为 CandidateModule，且仅实现 def run(self, inputs)。如需调用模型，可使用 self.llm.chat(messages, temperature=0.0, max_tokens=512)。
@@ -264,7 +269,7 @@ def probe_candidate(module: str, candidate: Any, default: Any) -> dict[str, Any]
     }
 
 
-def probe_with_tasks(module: str, candidate: Any, baseline: Any, tasks: list[dict[str, Any]], *, limit: int = 3) -> dict[str, Any]:
+def probe_with_tasks(module: str, candidate: Any, baseline: Any, tasks: list[dict[str, Any]], *, limit: int = 3, config=None) -> dict[str, Any]:
     """措施 3：在真实任务上比较候选与既有实现的输出，完全一致视为 no-op。"""
     samples = []
     for task in tasks[:limit]:
@@ -277,6 +282,9 @@ def probe_with_tasks(module: str, candidate: Any, baseline: Any, tasks: list[dic
             inputs = {"documents": documents[:5]}
         else:
             inputs = {"question": str(task.get("question", "")), "context": "placeholder context"}
+        if module == "EvidenceRetrieval" and config is not None and config.corpus_file:
+            inputs.update(corpus_file=config.corpus_file, corpus_sha256=config.corpus_sha256,
+                          excluded_ids=task.get("excluded_ids", []), k=config.top_k_ranked)
         def output_of(mod):
             try:
                 return mod.run(dict(inputs))
@@ -310,7 +318,12 @@ def reject_task_literals(source: str, tasks: list[dict[str, Any]]) -> None:
             raise ValueError("候选源码包含 训练集问题、参考答案或文档的原文片段，疑似任务硬编码")
 
 
-def default_source(module: str) -> str:
+def default_source(module: str, config=None) -> str:
+    if config is not None and module == "QueryUnderstanding" and config.query_mode == "identity":
+        return 'class CandidateModule:\n    def run(self, inputs):\n        return {"queries": [str(inputs["question"])]}\n'
+    if config is not None and module == "EvidenceRetrieval" and config.retrieval_backend == "bm25":
+        return 'class CandidateModule:\n    def run(self, inputs):\n        return _bm25_retrieve(inputs)\n'
+
     """Compact source exemplars used as the mutation prompt's baseline."""
     return _DEFAULT_SOURCES[module]
 

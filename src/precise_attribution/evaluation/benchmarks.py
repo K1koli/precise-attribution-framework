@@ -50,9 +50,19 @@ class BrightNDCG10Adapter:
         return dcg / idcg if idcg else 0.0
 
 
+class BrightFullCorpusAdapter(BrightNDCG10Adapter):
+    name = "bright_full_ndcg10"
+
+    def prepare(self, task):
+        if not task.get("gold_doc_ids"):
+            raise ValueError("BRIGHT task missing gold_doc_ids")
+        return dict(task)
+
+
 _ADAPTERS: dict[str, BenchmarkAdapter] = {
     "qa_token_f1": QATokenF1Adapter(),
     "bright_ndcg10": BrightNDCG10Adapter(),
+    "bright_full_ndcg10": BrightFullCorpusAdapter(),
 }
 
 

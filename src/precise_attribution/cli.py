@@ -93,7 +93,7 @@ def main() -> None:
     set_parser.add_argument("--output", required=True, help="实验输出目录")
     set_parser.add_argument("--train-ratio", type=float, default=0.6, help="train 占比，默认 0.6")
     set_parser.add_argument("--dev-ratio", type=float, default=0.2, help="dev 占比，剩余部分为最终 test")
-    set_parser.add_argument("--seed", type=int, default=0, help="切分与 bootstrap 的随机种子")
+    set_parser.add_argument("--seed", type=int, default=42, help="切分与 bootstrap 的随机种子")
     set_parser.add_argument("--proposals", type=int, default=2, help="生成多少个单模块源码候选")
     set_parser.add_argument("--target-module", action="append", choices=["QueryUnderstanding", "EvidenceRetrieval", "EvidencePreparation", "EvidenceReasoning"], help="限定 Critic 可诊断的模块范围；可重复传入，不指定时检查所有适用模块")
     test_parser = subparsers.add_parser("evaluate-test", help="对冻结版本运行独立最终测试，不改变接受结果")
@@ -107,6 +107,8 @@ def main() -> None:
             config = yaml.safe_load(handle)
         if not isinstance(config, dict):
             raise ValueError("配置文件必须是 YAML 对象")
+        if config.get("proposal_seeds"):
+            raise ValueError("proposal_seeds 已停用；失败候选请通过 history_reports 提供，不作为修改起点")
         client = client_from_config(config)
         health = client.health()
         if not health.get("ok"):
@@ -127,6 +129,8 @@ def main() -> None:
             config = yaml.safe_load(handle)
         if not isinstance(config, dict) or not isinstance(config.get("task"), dict):
             raise ValueError("配置必须包含 task 对象")
+        if config.get("proposal_seeds"):
+            raise ValueError("proposal_seeds 已停用；失败候选请通过 history_reports 提供，不作为修改起点")
         client = client_from_config(config)
         health = client.health()
         if not health.get("ok"):
@@ -142,15 +146,28 @@ def main() -> None:
             config = yaml.safe_load(handle)
         if not isinstance(config, dict):
             raise ValueError("配置文件必须是 YAML 对象")
+        prepared_split = config.get("split")
         tasks = config.get("tasks")
+        if not tasks and config.get("tasks_dir"):
+            from precise_attribution.evolution.prepared_data import load_prepared_data
+            payload = load_prepared_data(config["tasks_dir"])
+            tasks, prepared_split = payload["tasks"], payload["split"]
         if not tasks and config.get("tasks_file"):
             with Path(config["tasks_file"]).open("r", encoding="utf-8") as handle:
-                tasks = (yaml.safe_load(handle) or {}).get("tasks")
+                payload = yaml.safe_load(handle) or {}
+                tasks = payload.get("tasks")
+                prepared_split = payload.get("split")
         if not isinstance(tasks, list):
             raise ValueError("配置必须包含 tasks 列表，或用 tasks_file 指向题库")
         if len(tasks) < 3:
             raise ValueError("至少需要 3 道题")
         if args.command == "evaluate-test":
+            if prepared_split is not None:
+                from precise_attribution.evolution.multi_task import prepared_groups
+                prepared_groups(tasks, prepared_split)
+                frozen = json.loads((Path(args.experiment) / "multi_task_attribution.json").read_text())
+                if prepared_split != frozen['split']:
+                    raise ValueError("Prepared split differs from frozen experiment")
             result = evaluate_final_test(tasks, client_from_config(config), args.experiment)
             print(f"最终测试完成（不参与接受）：{Path(args.experiment) / 'test_report.json'}")
             print(f"test Δ：{result['delta']['mean']}")
@@ -168,6 +185,8 @@ def main() -> None:
             prior_library = load_prior_library(prior_path)
         else:
             prior_library = load_prior_library()
+        if config.get("proposal_seeds"):
+            raise ValueError("proposal_seeds 已停用；失败候选请通过 history_reports 提供，不作为修改起点")
         client = client_from_config(config)
         health = client.health()
         if not health.get("ok"):
@@ -183,6 +202,8 @@ def main() -> None:
             require_positive_ci=bool(config.get("gate", {}).get("require_positive_ci_lower_bound", True)),
             bypass_inactive_modules=bool(config.get("bypass_inactive_modules", False)),
             prior_library=prior_library,
+            history_reports=config.get("history_reports"),
+            prepared_split=prepared_split,
         )
         out = Path(args.output)
         (out / "multi_task_attribution.md").write_text(render_markdown(report), encoding="utf-8", errors="replace")

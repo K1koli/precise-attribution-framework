@@ -131,3 +131,65 @@ def test_no_accepted_candidate_tests_baseline(monkeypatch, tmp_path):
     result = mt.evaluate_final_test(tasks, None, tmp_path)
     assert result['candidate_id'] is None
     assert result['final'] == result['baseline']
+
+
+
+def test_history_summary_reaches_critic_but_not_candidate_start(monkeypatch, tmp_path):
+    tasks, _, old = run_experiment(monkeypatch, tmp_path / 'old')
+    old['selection']['accepted'] = False
+    old['candidates'][0]['dev'][0]['question'] = 'SECRET_DEV_QUESTION'
+    old['test_report'] = 'SECRET_TEST_RESULT'
+    old['selection']['reason'] = 'SECRET_DEV_REASON_DETAIL'
+    path = tmp_path / 'old' / 'multi_task_attribution.json'
+    path.write_text(json.dumps(old))
+    state = install_spies(monkeypatch, tasks)
+    diagnose = mt.Critic.diagnose_modules
+    propose = mt.propose_code_candidate
+    seen = []
+
+    def inspect_history(self, examples, available, priors, history=None):
+        assert history
+        text = json.dumps(history)
+        assert 'SECRET_' not in text
+        assert history[0]['attempts'][0]['candidate_dev_mean'] == 1.0
+        assert history[0]['attempts'][0]['accepted'] is False
+        seen.append(history)
+        return diagnose(self, examples, available, priors)
+
+    def inspect_source(llm, **kwargs):
+        assert kwargs['current_source'] == mt.default_source('EvidencePreparation')
+        return propose(llm, **kwargs)
+
+    monkeypatch.setattr(mt.Critic, 'diagnose_modules', inspect_history)
+    monkeypatch.setattr(mt, 'propose_code_candidate', inspect_source)
+    report = mt.run_multi_task_attribution(tasks, None, tmp_path / 'new', max_proposals=1,
+        history_reports=[str(path)], prior_library={'library_id': 'empty', 'operators': []})
+    assert seen and state['proposed']
+    assert report['history_summary'] == seen[0]
+    assert report['test_evaluation']['status'] == 'not_run'
+
+
+def test_prepared_split_is_used_without_reshuffling(monkeypatch, tmp_path):
+    tasks = task_set()
+    groups = mt.split_tasks(tasks)
+    split = {k: [t['id'] for t in g] for k, g in zip(['train','dev','test'], groups)}
+    split['seed'] = 42
+    state = install_spies(monkeypatch, tasks)
+    def no_runtime_split(*args, **kwargs):
+        raise AssertionError('Runtime reshuffled prepared data')
+    monkeypatch.setattr(mt, 'split_tasks', no_runtime_split)
+    report = mt.run_multi_task_attribution(tasks, None, tmp_path, max_proposals=0, prepared_split=split,
+                                         prior_library={'library_id':'empty','operators':[]})
+    assert report['split'] == split
+    assert report['test_evaluation']['status'] == 'not_run'
+
+
+@pytest.mark.parametrize('kind', ['duplicate', 'missing', 'unknown'])
+def test_invalid_prepared_split_rejected(kind):
+    tasks = task_set()
+    split = {'train':[t['id'] for t in tasks[:9]], 'dev':[t['id'] for t in tasks[9:12]],
+             'test':[t['id'] for t in tasks[12:]], 'seed':42}
+    if kind == 'duplicate': split['dev'][0] = split['train'][0]
+    elif kind == 'missing': split['test'].pop()
+    else: split['test'][0] = 'unknown'
+    with pytest.raises(ValueError): mt.prepared_groups(tasks, split)

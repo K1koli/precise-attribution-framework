@@ -1,0 +1,30 @@
+#!/bin/bash
+#PBS -N paf-history-tests
+#PBS -q gpu_ded
+#PBS -P ds_ccds_wei.lu
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+module load vllm/0.19.0
+source "$PWD/.venv/bin/activate"
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m pytest -q
+python - <<'PY'
+import json, tempfile, yaml
+from scripts.prepare_pbs_run import prepare
+from precise_attribution.evolution.history import load_history
+with tempfile.TemporaryDirectory() as d:
+    path=prepare('configs/experiments/bright_biology_continue.yaml',d,'develop',8000,'Qwen3.8-27B')
+    c=yaml.safe_load(path.read_text())
+    if not c.get('history_reports'):
+        print('No history configured for seed=42; isolation tests passed above')
+        raise SystemExit(0)
+    old=json.load(open(c['history_reports'][0]))
+    h=load_history(c['history_reports'],dataset_sha256=old['dataset_sha256'],split=old['split'],benchmark=old['benchmark'],harness_config=c['harness'])
+    print('Validated history runs:',len(h))
+    for r in h:
+        for a in r['attempts']:
+            print(r['run'],a['module'],a['candidate_dev_mean'],a['accepted'],a['reason'])
+PY

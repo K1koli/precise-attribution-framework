@@ -38,7 +38,7 @@ CONFIG_PATH="${CONFIG_PATH:-configs/experiments/qa30_attribution.yaml}"
 PROPOSALS="${PROPOSALS:-1}"
 TRAIN_RATIO="${TRAIN_RATIO:-0.6}"
 DEV_RATIO="${DEV_RATIO:-0.2}"
-SPLIT_SEED="${SPLIT_SEED:-0}"
+SPLIT_SEED="${SPLIT_SEED:-42}"
 
 # 先检查配置，避免配置错误占用 GPU 冷启动时间。
 RUNTIME_CONFIG=$(python scripts/prepare_pbs_run.py \

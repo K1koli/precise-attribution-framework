@@ -23,7 +23,7 @@ from precise_attribution.evolution.prior_library import (
 from precise_attribution.evaluation.benchmarks import benchmark_adapter
 
 
-def split_tasks(tasks: list[dict[str, Any]], *, train_ratio: float = 0.6, dev_ratio: float = 0.2, seed: int = 0):
+def split_tasks(tasks: list[dict[str, Any]], *, train_ratio: float = 0.6, dev_ratio: float = 0.2, seed: int = 42):
     """Deterministic, disjoint train/dev/test split with nonempty partitions."""
     if len(tasks) < 3:
         raise ValueError("至少需要 3 道题才能划分 train/dev/test")
@@ -40,6 +40,23 @@ def split_tasks(tasks: list[dict[str, Any]], *, train_ratio: float = 0.6, dev_ra
         [tasks[i] for i in sorted(indices)]
         for indices in (order[:n_train], order[n_train:n_train + n_dev], order[n_train + n_dev:])
     )
+
+
+def prepared_groups(tasks, split):
+    """Validate and resolve a prepared partition without reshuffling."""
+    if not isinstance(split, dict) or type(split.get("seed")) is not int:
+        raise ValueError("tasks.json 缺少有效的 split/seed；请重新 prepare")
+    ids = [t.get("id") for t in tasks]
+    if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError("题目 ID 必须唯一且非空")
+    groups = [split.get(k) for k in ("train", "dev", "test")]
+    if any(not isinstance(g, list) or not g for g in groups):
+        raise ValueError("train/dev/test 划分必须为非空列表")
+    flat = [i for g in groups for i in g]
+    if any(not isinstance(i, str) for i in flat) or len(set(flat)) != len(flat) or set(flat) != set(ids):
+        raise ValueError("划分必须互斥且完整覆盖题目 ID")
+    by_id = {t["id"]: t for t in tasks}
+    return tuple([by_id[i] for i in g] for g in groups)
 
 
 def task_fingerprint(tasks: list[dict[str, Any]]) -> str:
@@ -77,7 +94,7 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def paired_bootstrap(a: dict[str, float], b: dict[str, float], *, n_boot: int = 5000, seed: int = 0, minimum_coverage: float = 0.0, total_tasks: int | None = None):
+def paired_bootstrap(a: dict[str, float], b: dict[str, float], *, n_boot: int = 5000, seed: int = 42, minimum_coverage: float = 0.0, total_tasks: int | None = None):
     """对共享 task_id 求 mean(b - a) 及其 95% 百分位区间。"""
     keys = sorted(set(a) & set(b))
     if not keys:
@@ -152,7 +169,7 @@ def run_multi_task_attribution(
     candidates: list[dict[str, Any]] | None = None,
     train_ratio: float = 0.6,
     dev_ratio: float = 0.2,
-    seed: int = 0,
+    seed: int = 42,
     max_proposals: int = 2,
     target_modules: list[str] | None = None,
     benchmark: str = "qa_token_f1",
@@ -161,6 +178,8 @@ def run_multi_task_attribution(
     require_positive_ci: bool = True,
     prior_library: dict[str, Any] | None = None,
     bypass_inactive_modules: bool = False,
+    history_reports: list[str] | None = None,
+    prepared_split: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if len(tasks) < 3:
         raise ValueError("多题归因至少需要 3 道题")
@@ -177,9 +196,20 @@ def run_multi_task_attribution(
         raise FileExistsError(f"拒绝覆盖已有实验：{report_path}")
 
     base = HarnessConfig(**(harness_config or {}))
+    if benchmark == "bright_full_ndcg10":
+        from precise_attribution.harness.bm25 import corpus_index
+        if base.retrieval_backend != "bm25" or base.query_mode != "identity" or base.top_k_ranked != 10:
+            raise ValueError("Full BRIGHT requires identity query, BM25 and top-10 baseline")
+        corpus_index(base.corpus_file, base.corpus_sha256)
     adapter = benchmark_adapter(benchmark)
     dataset_sha256 = task_fingerprint(tasks)
-    train, dev, test = split_tasks(tasks, train_ratio=train_ratio, dev_ratio=dev_ratio, seed=seed)
+    if prepared_split is not None:
+        train, dev, test = prepared_groups(tasks, prepared_split)
+        seed = prepared_split["seed"]
+    elif benchmark == "bright_full_ndcg10":
+        raise ValueError("Full BRIGHT requires prepared split in tasks.json")
+    else:
+        train, dev, test = split_tasks(tasks, train_ratio=train_ratio, dev_ratio=dev_ratio, seed=seed)
     train = [adapter.prepare(task) for task in train]
     dev = [adapter.prepare(task) for task in dev]
     targets = target_modules or list(adapter.active_modules)
@@ -192,6 +222,11 @@ def run_multi_task_attribution(
         if bypass_inactive_modules else []
     )
 
+    from .history import load_history
+    history = load_history(history_reports or [], dataset_sha256=dataset_sha256,
+                           split={"train": [t["id"] for t in train], "dev": [t["id"] for t in dev],
+                                  "test": [t["id"] for t in test], "seed": seed},
+                           benchmark=benchmark, harness_config=asdict(base))
     baseline_train = evaluate_set(train, llm, base, adapter, bypass_modules=bypassed)
     train_scores = _as_scores(baseline_train)
 
@@ -208,6 +243,7 @@ def run_multi_task_attribution(
             "status": "completed",
             **Critic(llm).diagnose_modules(
                 _diagnostic_examples(baseline_train, train), diagnostic_scope, diagnostic_prior_cards,
+                **({"history": history} if history else {}),
             ),
         }
     except Exception as exc:  # keep the experiment reportable if the diagnostic call fails
@@ -272,14 +308,14 @@ def run_multi_task_attribution(
         }
         try:
             source, attempts = propose_code_candidate(
-                llm, module=target, current_source=default_source(target),
+                llm, module=target, current_source=default_source(target, base),
                 failures=failures, diagnosis=mutation_brief,
                 training_tasks=train, return_attempts=True,
             )
             candidate_module = load_candidate_module(source, llm)
-            baseline_module = load_candidate_module(default_source(target), llm)
+            baseline_module = load_candidate_module(default_source(target, base), llm)
             probe = probe_candidate(target, candidate_module, baseline_module)
-            diff = probe_with_tasks(target, candidate_module, baseline_module, train)
+            diff = probe_with_tasks(target, candidate_module, baseline_module, train, config=base)
             if not diff["changed"]:
                 proposed.append({"id": f"proposal-{i + 1}", "target_module": target, "diagnosis": mutation_brief,
                                  "source": source, "status": "rejected_no_behavioral_change",
@@ -316,6 +352,7 @@ def run_multi_task_attribution(
             candidate_results.append({
                 "id": candidate_id, "target_module": module, "source": source,
                 "rationale": cand.get("rationale"), "dev": dev_rows,
+                "dev_mean": _mean(list(_as_scores(dev_rows).values())),
                 "n_errors": n_errors,
                 "dev_improved": dev_up, "dev_worsened": dev_down, "dev_tied": dev_tie,
                 "status": "evaluated" if n_errors == 0 else "rejected_runtime_errors",
@@ -366,6 +403,7 @@ def run_multi_task_attribution(
         "dataset_sha256": dataset_sha256,
         "harness_config": asdict(base),
         "split": {"train": [t["id"] for t in train], "dev": [t["id"] for t in dev], "test": [t["id"] for t in test], "seed": seed},
+        "history_summary": history,
         "baseline_train": baseline_train,
         "baseline_dev": baseline_dev,
         "run_errors": {

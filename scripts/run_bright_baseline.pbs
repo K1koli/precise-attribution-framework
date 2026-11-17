@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N paf-bm25-baseline
+#PBS -q gpu_ded
+#PBS -P ds_ccds_wei.lu
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=00:30:00
+#PBS -j oe
+set -euo pipefail
+cd "$PBS_O_WORKDIR"
+module load vllm/0.19.0
+source "$PWD/.venv/bin/activate"
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+SPLIT_SEED="${SPLIT_SEED:-42}"
+SUBSET="${SUBSET:-biology}"
+OUTPUT="data/derived/${SUBSET}-bm25-seed${SPLIT_SEED}-${PBS_JOBID}"
+python scripts/evaluate_bright_baseline.py --subset "$SUBSET" --seed "$SPLIT_SEED" --output "$OUTPUT"

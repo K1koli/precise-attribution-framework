@@ -55,6 +55,7 @@ class Critic:
         examples: list[dict[str, Any]],
         available_modules: list[str],
         prior_cards: list[dict[str, Any]] | None = None,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Compare successful and failed training traces and nominate modules to ablate."""
         data = _chat_json(self.llm, [
@@ -75,6 +76,7 @@ class Critic:
                 "role": "user",
                 "content": (
                     f"可诊断模块：{available_modules}\n"
+                    f"历史尝试（源码与dev汇总；不得推测dev具体样例；失败源码不是当前版本）：{json.dumps(history or [], ensure_ascii=False)}\n"
                     f"可用人类先验算子（含来源、诊断线索和可证伪检查）：{json.dumps(prior_cards or [], ensure_ascii=False)}\n"
                     f"正确/错误样例轨迹与标准答案（仅训练集）：{json.dumps(examples, ensure_ascii=False)}"
                 ),

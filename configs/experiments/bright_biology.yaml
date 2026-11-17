@@ -1,5 +1,5 @@
 # BRIGHT/Biology 上的归因与变异实验：检索型任务，指标 nDCG@10。
-# 任务集由 scripts/bright_to_tasks.py 生成（每题自带 50 篇候选池 + gold_doc_ids）。
+# 全库 BM25 基线：原始问题，无 LLM 改写，无 gold 候选注入。
 llm:
   base_url: http://127.0.0.1:8000/v1
   model: Qwen3.8-27B
@@ -8,15 +8,17 @@ llm:
   max_retries: 2
 
 harness:
-  # 实测（103 题，50 池）：rank10 = 0.1105 优于 rank5 = 0.1069；BM25 自实现更差（0.082）已回滚
-  top_k_retrieval: 50
-  top_k_ranked: 10        # nDCG@10 需要 10 篇，原来的 5 天然吃亏
+  query_mode: identity
+  retrieval_backend: bm25
+  corpus_file: data/bright/processed/biology/corpus.json
+  corpus_sha256: 0497598a31adcbd1751765a87517053c283d89b35bafd7f62c8dbea38e210ff7
+  top_k_retrieval: 10
+  top_k_ranked: 10
   context_max_chars: 9000
 
-benchmark: bright_ndcg10
-# 检索型任务只给检索打分：把不参与计分的模块旁路掉，省掉无意义的 LLM 调用
+benchmark: bright_full_ndcg10
 bypass_inactive_modules: true
-tasks_file: configs/tasks/bright_biology_50.yaml
+tasks_dir: data/bright/processed/biology
 
 gate:
   minimum_dev_gain: 0.01

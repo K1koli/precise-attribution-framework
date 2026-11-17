@@ -1,0 +1,31 @@
+# BRIGHT/Biology 上的归因与变异实验：检索型任务，指标 nDCG@10。
+# 全库 BM25 基线：原始问题，无 LLM 改写，无 gold 候选注入。
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  model: Qwen3.8-27B
+  api_key: EMPTY
+  timeout: 240
+  max_retries: 2
+
+harness:
+  query_mode: identity
+  retrieval_backend: bm25
+  corpus_file: data/bright/processed/biology/corpus.json
+  corpus_sha256: 0497598a31adcbd1751765a87517053c283d89b35bafd7f62c8dbea38e210ff7
+  top_k_retrieval: 10
+  top_k_ranked: 10
+  context_max_chars: 9000
+
+benchmark: bright_full_ndcg10
+bypass_inactive_modules: true
+tasks_dir: data/bright/processed/biology
+
+gate:
+  minimum_dev_gain: 0.01
+  minimum_pair_coverage: 0.90
+  require_positive_ci_lower_bound: true
+
+# History supplies feedback only; proposer starts from the current baseline.
+mutation_targets: [QueryUnderstanding]
+# Only add completed seed=42 runs here; do not mix earlier splits.
+history_reports: []
