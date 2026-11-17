@@ -5,7 +5,7 @@
 需要 Python 3.12 或 3.13。
 
 ```bash
-git clone --branch feat/iterative-harness-evolution https://github.com/K1koli/precise-attribution-framework.git
+git clone --branch xiaoyan/harness-evolution https://github.com/K1koli/precise-attribution-framework.git
 cd precise-attribution-framework
 
 python3.12 -m venv .venv
